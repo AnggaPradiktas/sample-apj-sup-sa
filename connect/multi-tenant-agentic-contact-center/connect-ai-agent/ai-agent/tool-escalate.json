@@ -1,0 +1,21 @@
+{
+  "toolName": "Escalate",
+  "toolType": "RETURN_TO_CONTROL",
+  "description": "Escalate the conversation to a human agent when the customer asks for a person or the request is out of scope.",
+  "instruction": {
+    "instruction": "Use this tool to hand off to a human agent when the customer requests a person, is frustrated, or the request cannot be handled by the available tools."
+  },
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "reason": {
+        "type": "string",
+        "description": "Reason for escalation"
+      }
+    },
+    "required": ["reason"]
+  },
+  "userInteractionConfiguration": {
+    "isUserConfirmationRequired": false
+  }
+}

@@ -108,8 +108,14 @@ find what you need without opening each folder.
 | [bedrock-api-key-push-protection-guide](./security/bedrock-api-key-push-protection-guide) | Stops Amazon Bedrock long-term API keys (`ABSK…`) reaching a GitHub repository — which matters because GitHub's built-in secret scanning does not cover that pattern, so a hardcoded key can be pushed undetected. Gives the detection regex and an implementation path per GitHub plan: `git-secrets` pre-commit on Free, custom pattern plus push protection on Team, and organisation-level patterns on Enterprise Cloud. |
 | [cloudhsm-to-kms-keys-migration](./security/cloudhsm-to-kms-keys-migration) | Bulk migration of asymmetric RSA and ECC keys from AWS CloudHSM to AWS KMS, where the AWS guidance covers one key at a time and offers no process for many. Provides discovery and listing with pattern filters, key-type analysis for planning, and batch splitting into fixed-size JSON files to limit blast radius and allow parallel runs. |
 
-[Analytics](./analytics), [Modern Applications](./modern-applications) and
-[Amazon Connect](./connect) do not have samples yet. Contributions are welcome.
+### [Amazon Connect](./connect)
+
+| Sample | What it solves |
+|--------|----------------|
+| [multi-tenant-agentic-contact-center](./connect/multi-tenant-agentic-contact-center) | Self-service support for a multi-tenant SaaS platform, where the hard part is not the chatbot but making sure one tenant's AI conversation can never surface another tenant's data. **The tenant identity is never a prompt input**: an AgentCore Gateway interceptor overwrites `merchant_id` on every tool call with the value from the caller's Cognito JWT, so a merchant who asks about someone else's transactions gets a refusal that no jailbreak can reach. Ships the whole path — React SPA on ECS Fargate behind a CloudFront VPC origin, Amazon Connect chat and Cases, Q in Connect orchestration, Aurora PostgreSQL zero-ETL into a VPC-only OpenSearch Serverless collection — plus Playwright tests that assert the cross-tenant refusal. |
+
+[Analytics](./analytics) and [Modern Applications](./modern-applications) do not
+have samples yet. Contributions are welcome.
 
 ## How to use this repository
 
