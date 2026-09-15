@@ -1,7 +1,6 @@
 # Amazon Connect + Bedrock AgentCore samples
 
-This is a **Amazon Connect + Amazon Bedrock AgentCore** sample built on a payments dashboard. It shows how to stand up an AWS application end to end — a containerized React SPA served privately through CloudFront, Cognito auth, an embedded Amazon Connect
-contact center, **Amazon Connect Cases**, live chat, and **agentic self-service** where a merchant asks about their own payments in chat and a **Q in Connect** orchestrator answers by calling a tenant-isolated **AgentCore Gateway** MCP tool — all with **multi-tenant merchants** whose tenant identity travels in the JWT and is enforced server-side.
+This is a **Amazon Connect + Amazon Bedrock AgentCore** sample built on a payments dashboard. It shows how to stand up an AWS application end to end, a containerized React SPA served privately through CloudFront, Cognito auth, an embedded Amazon Connect contact center, **Amazon Connect Cases**, live chat, and **agentic self-service** where a merchant asks about their own payments in chat and a **Q in Connect** orchestrator answers by calling a tenant-isolated **AgentCore Gateway** MCP tool, all with **multi-tenant merchants** whose tenant identity travels in the JWT and is enforced server-side.
 
 ![The AnyCompanyPay landing page, offering a merchant workspace and an admin/agent workspace](docs/images/homepage.png)
 

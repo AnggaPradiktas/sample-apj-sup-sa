@@ -1,20 +1,11 @@
 # AnyCompanyPay — Design & Deployment
 
-> ⚠️ **Naming & environment (read first).** The current code produces **suffix-free** stack/resource
-> names by default and derives **region, account, and env from your active AWS session** — nothing is
-> hardcoded. Default stacks: `AnyCompanyPayAppStack`, `AnyCompanyPayConnectStack`, `AnyCompanyPayAuroraStack`,
-> `AnyCompanyPayZeroEtlStack`, `AnyCompanyPayConnectAiAgentStack`; default resource names drop any suffix
-> (`anycompany-pay-customer-profile`, `anycompany-pay-chat`, `anycompany-pay-zeroetl`, SSM `/anycompany-pay/runtime-config`, …).
-> Pass an optional env suffix — `-c envName=<name>` (CDK) or `ENV_NAME=<name>` (scripts) — to append
-> `-<name>` to every name (and `/<name>/` to SSM paths) and run a second isolated copy in the same
-> account + region. It defaults to **empty**.
->
-> **Worked-example names below are illustrative.** Many command outputs and tables in this doc show
-> names from earlier deployments: a reference copy that predates the refactor (retains `-v2`, and a
-> few names from before a rebrand) and a since-**decommissioned** second copy
-> (an `-<env>` suffix). A fresh deploy with the current code produces the suffix-free names above instead.
-> Renaming CDK stacks also means a `cdk deploy` against an old environment creates **new** stacks
-> rather than updating the old ones — plan any cutover (deploy new, migrate, delete old) deliberately.
+> **Naming & environment.** Stack and resource names are **suffix-free** by default and derive
+> **region, account, and env from your active AWS session** — nothing is hardcoded. Default stacks:
+> `AnyCompanyPayAppStack`, `AnyCompanyPayConnectStack`, `AnyCompanyPayAuroraStack`,
+> `AnyCompanyPayZeroEtlStack`, `AnyCompanyPayConnectAiAgentStack`. Pass an optional env suffix —
+> `-c envName=<name>` (CDK) or `ENV_NAME=<name>` (scripts) — to append `-<name>` to every name
+> (and `/<name>/` to SSM paths) and run a second isolated copy in the same account + region.
 
 This document explains how the AnyCompanyPay SPA is deployed to AWS: the architecture, the auth model, how to deploy and operate it, and how to tear it down.
 
@@ -125,31 +116,17 @@ Because CloudFront depends only on the ALB (not the service/task), the graph sta
 
 ## 4. Repository layout
 
+See the full tree in the project [README §10](../README.md#10-repository-layout). Key paths for this
+deploy guide:
+
 ```
-.
-├── Dockerfile              # multi-stage: build SPA, serve via nginx
-├── nginx.conf              # SPA fallback routing + /healthz + serves /auth-config.json
-├── 40-auth-config.sh       # entrypoint hook: writes /auth-config.json from env
-├── .dockerignore
-├── DEPLOYMENT.md           # this file
-├── src/
-│   ├── auth/               # client-side auth
-│   │   ├── authConfig.ts   # loads /auth-config.json (or VITE_ env fallback)
-│   │   ├── pkce.ts         # PKCE verifier/challenge helpers
-│   │   ├── tokens.ts       # token storage + JWT decode
-│   │   └── AuthProvider.tsx# context: login / logout / callback / refresh
-│   ├── components/RequireAuth.tsx  # route guard + login prompt + access-restricted
-│   ├── pages/AuthCallback.tsx      # OAuth code-exchange landing route
-│   ├── App.tsx             # routes: public "/", "/auth/callback", guarded dashboards
-│   └── main.tsx            # wraps app in <AuthProvider>
-├── infra/                  # CDK app — app + Connect stacks
-│   ├── bin/app.ts
-│   ├── lib/app-stack.ts        # web app: VPC, ALB, CloudFront, ECS+SPA, Cognito, SSM config
-│   ├── lib/connect-stack.ts    # Connect instance, Cases, Customer Profiles, chat
-│   ├── lambda/{cases-api,chat-api,config-writer,auth}/
-│   └── cdk.json / package.json / tsconfig.json
-├── database/               # Aurora PostgreSQL module (AnyCompanyPayAuroraStack)
-└── opensearch-zeroetl/     # private OpenSearch + zero-ETL + Search API (AnyCompanyPayZeroEtlStack)
+infra/                       # CDK app — app + Connect stacks
+  lib/app-stack.ts           #   Module 1: VPC, ALB, CloudFront, ECS+SPA, Cognito, SSM config
+  lib/connect-stack.ts       #   Module 2: Connect instance, Cases, Customer Profiles, chat
+  lambda/{cases-api,chat-api,connect-user,config-writer}/
+database/                    # Aurora PostgreSQL (AnyCompanyPayAuroraStack)
+opensearch-zeroetl/          # private OpenSearch + zero-ETL + Search/Commerce API (AnyCompanyPayZeroEtlStack)
+connect-ai-agent/            # AI Q&A: AgentCore Gateway + Lex + Q in Connect (AnyCompanyPayConnectAiAgentStack)
 ```
 
 ### Container image
@@ -311,30 +288,9 @@ D=anycompany-pay-customer-profile bash provision-customer-profiles.sh
 > merged Connect values survive. If the Cognito identifiers ever change (pool recreation), re-run
 > the connect stack to re-merge.
 
-### Reference environment (pre-refactor `v2`, still live in `REGION`)
-
-> Example values from a reference copy deployed before the de-parameterization refactor, so its
-> names retain the `-v2` suffix. A fresh deploy with the current code drops the suffix
-> (`/anycompany-pay/runtime-config`, `anycompany-pay-chat-inbound`, `anycompany-pay-support`, `anycompany-pay-chat`,
-> `anycompany-pay-customer-profile`, alias `anycompany-pay-<account>`).
-
-| Item | Value |
-|---|---|
-| App URL | `https://<distribution-id>.cloudfront.net` |
-| User Pool | `<user-pool-id>` · Client `<app-client-id>` |
-| Runtime config | SSM `/anycompany-pay/v2/runtime-config` |
-| Connect instance | `<connect-instance-id>` (alias `anycompany-pay-<ACCOUNT_ID>-v2`) |
-| Cases API | `https://<api-id>.execute-api.REGION.amazonaws.com` |
-| Chat API | `https://<api-id>.execute-api.REGION.amazonaws.com` (same HTTP API; route `POST /chat/start`) |
-| Chat inbound flow | `<chat-inbound-flow-id>` (`anycompany-pay-chat-inbound-v2`) |
-| Support queue | `<support-queue-id>` (`anycompany-pay-support-v2`) |
-| Chat routing profile | `<chat-routing-profile-id>` (`anycompany-pay-chat-v2`) |
-| Cases domain | `<cases-domain-id>` (associated to the instance via CDK) |
-| Customer Profiles | domain `anycompany-pay-customer-profile-v2` (created via CDK + KMS) |
-
 > **Provision the chat agent** after deploying the connect stack:
 > `AGENT_EMAIL="agent1@anycompany-pay.example" bash infra/provision-agent.sh` (creates `agent1` on the
-> `anycompany-pay-chat-v2` routing profile with a generated password in Secrets Manager) — see
+> `anycompany-pay-chat` routing profile with a generated password in Secrets Manager) — see
 > [§15](#15-live-chat-amazon-connect-chat-sdk).
 
 ---
@@ -347,8 +303,8 @@ D=anycompany-pay-customer-profile bash provision-customer-profiles.sh
 | User Pool ID | `<user-pool-id>` · App Client `<app-client-id>` |
 | **Admin login** | `admin@anycompany-pay.example` → Admin workspace |
 | **Agent (web) login** | `agent1@anycompany-pay.example` → Admin/Agent workspace (chat + Cases) |
-| Connect instance | `<connect-instance-id>` (alias `anycompany-pay-<ACCOUNT_ID>-v2`) |
-| CCP URL | `https://anycompany-pay-<ACCOUNT_ID>-v2.my.connect.aws/ccp-v2/` |
+| Connect instance | `<connect-instance-id>` (alias `anycompany-pay-<ACCOUNT_ID>`) |
+| CCP URL | `https://anycompany-pay-<ACCOUNT_ID>.my.connect.aws/ccp-v2/` |
 | **Connect agent login** | `agent1` (the CCP inside Admin → Contact Center) |
 
 **No password appears in this repository.** Every demo credential is generated at provisioning time
@@ -409,9 +365,9 @@ In a browser: open the site (loads without login) → click a workspace → "Sig
 - Fargate tasks have **no public IP**; outbound goes through the NAT gateway.
 - CloudFront redirects viewers to HTTPS.
 - The Cognito app client is public (no secret); tokens are obtained via PKCE and stored in `localStorage`.
-- Authorization is **client-side** (group check in the SPA). This gates the UI, not the static assets. It suits this mock-data demo; a production app serving real data should enforce authorization server-side (e.g., at an API behind the ALB, or restore edge/authorizer checks).
+- Authorization is **two-layered**: the SPA gates the UI by Cognito group, and every data API (Cases, Chat, Search, Commerce) enforces role and tenant **server-side** via an API Gateway JWT authorizer + Lambda. The static SPA bundle is public (no secrets); real data isolation is server-enforced. See the README §8 "Security practices" for the full list.
 
-Production hardening ideas: WAF on the distribution, a custom domain + ACM cert, `httpOnly`/`SameSite` cookies instead of `localStorage`, MFA on the user pool, and server-side authorization for any real data API.
+Production hardening ideas: WAF on the distribution, a custom domain + ACM cert, `httpOnly`/`SameSite` cookies instead of `localStorage`, and MFA on the user pool.
 
 ---
 
@@ -431,7 +387,7 @@ npx cdk destroy --all
 Notes:
 - The Cognito user pool has `RemovalPolicy.DESTROY`, so it and the demo users are removed.
 - The Amazon Connect instance is deleted with the stack (the agent user goes with it); the approved-origin custom resource de-registers on delete.
-- The CDK stack declares the Amazon Connect Cases domain/fields/template, but Cases + Customer Profiles were **enabled via the Connect console**, which associated the domain to the instance (an association CDK doesn't own). Before `cdk destroy` succeeds you may need to disassociate Cases from the instance first (`aws connect delete-integration-association ... CASES_DOMAIN`); otherwise the domain/instance deletion can be blocked.
+- The CDK stack declares the Amazon Connect Cases domain/fields/template and the Customer Profiles domain + KMS key. The Cases-domain→instance association is also CDK-managed. If `cdk destroy` is blocked by a stale association, disassociate Cases first (`aws connect delete-integration-association ... CASES_DOMAIN`).
 
 ---
 
@@ -836,12 +792,6 @@ ParticipantToken means a merchant only ever accesses its own chat session.
 
 ---
 
-## 16. AI (Amazon Bedrock AgentCore) — out of scope
-
-The reference architecture's AI column (AgentCore Gateway → custom MCP + Knowledge Base + Guardrails)
-is **intentionally not built**. References were captured earlier if/when it's revisited, but it is
-currently out of scope.
-
 ---
 
 ## 17. Transaction search — Aurora → zero-ETL → private OpenSearch
@@ -985,7 +935,7 @@ done
 
 # GET-only Search API is JWT-protected (unauthenticated => 401):
 curl -s -o /dev/null -w "%{http_code}\n" \
-  https://bye4vkbm55.execute-api.REGION.amazonaws.com/transactions   # -> 401
+  https://<api-id>.execute-api.<REGION>.amazonaws.com/transactions   # -> 401
 ```
 
 **Isolation check (with a merchant token).** The app client only allows SRP + refresh auth, so to mint
@@ -1048,7 +998,7 @@ from SSM as `connect.commerceApiUrl`.
 ### Verify
 
 ```bash
-API=https://bye4vkbm55.execute-api.REGION.amazonaws.com
+API=https://<api-id>.execute-api.<REGION>.amazonaws.com
 
 # Unauthenticated -> 401 at the authorizer (before the Lambda):
 for p in /refunds /disputes; do curl -s -o /dev/null -w "$p %{http_code}\n" "$API$p"; done
@@ -1149,57 +1099,26 @@ silently stops all tool calls (the orchestrator then has no gateway tool).
 > records the exact `toolName`/`toolId` the gateway exposes
 > (`query_transactions___query_transactions`).
 
-### Reference AgentCore resources (pre-refactor `v2`, still live in `REGION`)
+### Amazon Connect console steps
 
-> Example values from a reference copy. The gateway/tool ids are generated per deployment; the
-> discovery URL below carries the `-v2` instance alias only because that copy predates the refactor.
-> A fresh deploy produces its own generated ids and a suffix-free alias (`anycompany-pay-<account>`).
+The AI prompt/agent and contact flow are scriptable (`provision-ai-agent.sh`, `deploy-lex.sh`), but
+two console steps are still required — see
+[§2 of the quick start](../README.md#2-one-time-connect-setup-agentic-self-service-only) for the
+step-by-step:
 
-| Resource | Value |
-|---|---|
-| Tool Lambda | `AnyCompanyPayConnectAiAgentStack-TransactionToolFnE8AC4F2-UVQR9Eo2xyfC` |
-| Interceptor Lambda | `AnyCompanyPayConnectAiAgentStack-GatewayInterceptorFn1B34-87pEm6YEF12y` |
-| Gateway id | `anycompany-pay-transaction-tools-<gateway-suffix>` (status READY) |
-| Gateway MCP URL | `https://anycompany-pay-transaction-tools-<gateway-suffix>.gateway.bedrock-agentcore.REGION.amazonaws.com/mcp` |
-| Tool target | `query-transactions` (targetId `SKDVSXWHP8`, READY) |
-| Gateway IAM role | `anycompany-pay-agentcore-gateway-role` |
-| Inbound auth | CUSTOM_JWT — **issuer = the Connect instance** (not Cognito) |
-| Discovery URL | `https://anycompany-pay-<ACCOUNT_ID>-v2.my.connect.aws/.well-known/openid-configuration` |
-| Allowed audience | `anycompany-pay-transaction-tools-<gateway-suffix>` (**the gateway id** — Connect puts it in the token `aud`) |
-| MCP supported version | `2025-03-26` |
+1. **Create the Q in Connect AI domain** (console → Q in Connect → Domains → Add domain).
+2. **Register the AgentCore Gateway as an MCP server** (console → Third-party applications → Add
+   integration → MCP server → select `anycompany-pay-transaction-tools` → pick your instance).
 
-### Amazon Connect console steps (live instance — console-only, no API)
-
-> **Why not scripted:** verified against the installed AWS CLI (2.35.21) and the latest `botocore`
-> (1.43.88) — neither `qconnect` nor `connect` exposes any MCP/Gateway operation, and there is no MCP
-> `IntegrationType`. Registering the AgentCore Gateway as an MCP server and binding it to the AI agent
-> has **no public API today**, so these steps are console-only. (The AI prompt/agent and the contact
-> flow *are* scriptable via `qconnect`/`connect`, but they're useless without the bind, so we don't
-> script them. Note also that the AI agent tool's `overrideInputValues` supports only a *constant* —
-> it cannot inject a per-session `merchant_id` — which is why the **Gateway interceptor** owns tenant
-> enforcement, not an Agent Designer override.)
-
-1. **Register the Gateway as an MCP server**: Connect admin website -> **Third-party applications**
-   -> **Add integration** -> Integration type = **MCP server** -> select the Gateway
-   `anycompany-pay-transaction-tools` -> under **Instance association** pick **`anycompany-pay-<ACCOUNT_ID>-v2`** ->
-   **Add integration**. (Only the instance whose OIDC discovery URL matches the gateway's Discovery
-   URL is selectable — see "Inbound-auth model" below if only *None* appears.)
-2. **AI Agent Designer**: create an **ORCHESTRATION** (agentic self-service) AI agent and add the
-   **`query_transactions`** tool from the MCP server. Do **not** expose `merchant_id` as a tool input
-   — the interceptor injects it from trusted session context. (The tool's `overrideInputValues` only
-   accepts a *constant*, so it can't carry a per-session tenant anyway.)
-3. **Seed the tenant into the session**: add `merchant_id` to the AI agent session from the contact
-   attribute `ChatApiFn` stamps (`UpdateSessionData` / contact attributes), so the interceptor can
-   read it as trusted context.
-4. **Chat flow**: no longer a manual step — `connect-ai-agent/deploy-lex.sh` redeploys the connect
-   stack with `-c agenticBotAliasArn` + `-c qicAssistantArn`, which switches `anycompany-pay-chat-inbound` to
-   the agentic self-service flow (Q in Connect + Lex, then queue fallback) automatically.
+> The AI agent tool's `overrideInputValues` supports only a *constant* — it cannot inject a
+> per-session `merchant_id` — which is why the **Gateway interceptor** owns tenant enforcement, not
+> an Agent Designer override.
 
 ### Inbound-auth model (important — this is where it goes wrong)
 
 For the Connect integration, **Amazon Connect — not Cognito — is the OIDC issuer** of the JWT the AI
-agent presents to the gateway. Two settings on the gateway's `customJWTAuthorizer` are mandatory, and
-the correct provisioning script (`provision-gateway.sh`) now sets both:
+agent presents to the gateway. Two settings on the gateway's `customJWTAuthorizer` are mandatory (both
+set by the CDK stack in `connect-ai-agent-stack.ts`):
 
 | Setting | Correct value | Why |
 |---|---|---|
@@ -1208,18 +1127,16 @@ the correct provisioning script (`provision-gateway.sh`) now sets both:
 | MCP `supportedVersions` | must include **`2025-03-26`** | The MCP version Connect speaks; absent it, the integration won't work. |
 
 There is a **chicken-and-egg**: the audience must equal the gateway id, which doesn't exist until the
-gateway is created. So the script **creates the gateway with the discovery URL only, reads back the
-gateway id, then updates `allowedAudience` = that id.** It runs the update every time, so it also
-**self-corrects** a gateway that was created against the wrong (e.g. Cognito) discovery URL.
+gateway is created. The CDK stack handles this with an in-stack custom resource (`gateway-audience/`)
+that sets `allowedAudience` = the gateway id immediately after create.
 
 **Symptom of a misconfigured gateway (silent failure):** on the Connect "Add integration" page, the
 **Instance association** dropdown offers only **None** — the instance you want is not selectable.
-That means the gateway's Discovery URL does not match that instance's OIDC. Fix: re-run
-`provision-gateway.sh` (or set `CONNECT_ALIAS` / `CONNECT_DISCOVERY_URL` to the right instance),
-reload the console page. Likewise, if the gateway namespace/tools never appear on the agent after
-association, check the `aud` (gateway id) and that `2025-03-26` is advertised. (See the re:Post
-article "Troubleshooting AgentCore Gateway Connection Issues with Amazon Connect AI Agents" — these
-mismatches fail without an error.)
+That means the gateway's Discovery URL does not match that instance's OIDC. Fix: redeploy with the
+correct alias (`bash deploy.sh` picks it up from the connect stack, or override with
+`-c connectAlias=<instance-alias>`), then reload the console page. Likewise, if the gateway
+namespace/tools never appear on the agent after association, check the `aud` (gateway id) and that
+`2025-03-26` is advertised.
 
 ### Isolation verification (end-to-end, live)
 
