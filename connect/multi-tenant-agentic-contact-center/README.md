@@ -8,8 +8,6 @@ This is a **Amazon Connect + Amazon Bedrock AgentCore** sample built on a paymen
 > lives in [`docs/`](docs/):
 > [`DEPLOYMENT.md`](docs/DEPLOYMENT.md) (deploy/operate),
 > [`connect-ai-agent/README.md`](connect-ai-agent/README.md) (the AI Q&A module).
-> Demo logins: usernames are in [`DEPLOYMENT.md`](docs/DEPLOYMENT.md) §7 and every password is
-> generated into AWS Secrets Manager at provisioning time — none is stored in this repository.
 > The app also ships a public developer-docs page at `/docs` (`src/pages/Docs.tsx`).
 
 ---
