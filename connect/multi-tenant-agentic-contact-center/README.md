@@ -558,13 +558,15 @@ instance as SAML); self-hosting the web font to drop the Google Fonts CSP allowa
 .
 ├── src/                         # React + Vite SPA
 │   ├── auth/                    # Cognito PKCE auth (AuthProvider, tokens, pkce, authConfig)
-│   ├── connect/                 # Runtime config, Cases/Chat/Search API clients, useConnectChat hook
+│   ├── connect/                 # Runtime config, Cases/Chat/Search API clients, useConnectChat hook, transactionsApi
 │   ├── components/              # layout (Sidebar/Topbar/nav), chat/ (FloatingChat + ChatConversation), ui primitives
-│   ├── connect/                 # ...also: transactionsApi.ts (Search API client)
 │   ├── pages/
-│   │   ├── admin/               # Overview, Merchants, Transactions, CaseManagement, ContactCenter (lazy), Risk
-│   │   └── merchant/            # Overview, Payments, Customers, Payouts, Transactions (OpenSearch), Support, SupportChat, Settings
-│   ├── data/                    # mock data + types
+│   │   ├── PersonaSelect.tsx    # landing page (role picker)
+│   │   ├── AuthCallback.tsx     # Cognito PKCE callback handler
+│   │   ├── Docs.tsx             # public developer-docs page (/docs)
+│   │   ├── admin/               # CaseManagement, ContactCenter (lazy)
+│   │   └── merchant/            # Transactions (OpenSearch), Support, SupportChat
+│   ├── data/                    # shared types
 │   └── App.tsx                  # routes (admin/* and merchant/* under RequireAuth)
 ├── database/                    # Aurora PostgreSQL module (own CDK app: AnyCompanyPayAuroraStack)
 │   ├── lib/aurora-stack.ts      # VPC (isolated subnets), Aurora PG 18.4, logical replication, seed trigger
@@ -576,12 +578,18 @@ instance as SAML); self-hosting the web font to drop the Google Fonts CSP allowa
 │       ├── commerce-api/        # CommerceApiFn: POST /transactions, refunds + disputes, dispute->Connect Case
 │       └── config-writer/       # merges searchApiUrl + commerceApiUrl into the SSM runtime config + ECS redeploy
 ├── connect-ai-agent/            # AI transaction Q&A module (own CDK app: AnyCompanyPayConnectAiAgentStack)
-│   ├── lib/connect-ai-agent-stack.ts   # AgentCore Gateway + target + interceptor (AWS::BedrockAgentCore::*)
-│   │                                   #   + tool/interceptor Lambdas + gateway exec role
+│   ├── lib/
+│   │   ├── connect-ai-agent-stack.ts  # AgentCore Gateway + target + interceptor (AWS::BedrockAgentCore::*)
+│   │   │                              #   + tool/interceptor Lambdas + gateway exec role
+│   │   ├── lex-stack.ts               # Lex bot + alias for Q in Connect routing
+│   │   └── qic-domain-stack.ts        # Q in Connect domain (CDK-managed alternative to console step 1)
 │   ├── lambda/
 │   │   ├── transaction-tool/    # MCP tool: tenant-filtered OpenSearch query (read-only)
 │   │   ├── gateway-interceptor/ # AgentCore Gateway request interceptor (tenant gate, fail-closed)
 │   │   └── gateway-audience/    # custom resource: sets allowedAudience=[gatewayId] (self-reference)
+│   ├── deploy.sh                # deploy the AI-agent CDK stack
+│   ├── deploy-lex.sh            # Lex bot -> Q in Connect; redeploys connect stack with Lex context
+│   ├── deploy-qic-domain.sh     # deploy Q in Connect domain stack
 │   ├── provision-ai-agent.sh    # create Q in Connect orchestration prompt + agent; bind Self-Service
 │   └── provision-gateway.sh     # DEPRECATED — gateway is CDK now; legacy CLI path, guarded off
 ├── infra/
@@ -589,9 +597,11 @@ instance as SAML); self-hosting the web font to drop the Google Fonts CSP allowa
 │   │   ├── app-stack.ts         # Module 1: VPC, ALB, CloudFront, ECS+SPA, Cognito, SSM config
 │   │   └── connect-stack.ts     # Module 2: Connect instance, Cases, Customer Profiles, chat flows/queue/routing profile
 │   ├── bin/app.ts               # instantiates the app + Connect stacks
+│   ├── cloudformation/          # standalone CFN template (anycompany-pay.yaml) + build-and-push helper
 │   ├── lambda/
 │   │   ├── cases-api/           # Cases API Lambda (role/tenant-aware)
 │   │   ├── chat-api/            # StartChatContact Lambda (tenant-stamped; case binding)
+│   │   ├── connect-user/        # Connect user provisioning Lambda
 │   │   └── config-writer/       # custom resource: merges Connect values into the SSM param + ECS redeploy
 │   ├── provision-merchants.sh          # merchant tenants + users in Cognito
 │   ├── provision-customer-profiles.sh  # Customer Profiles (B2B) for merchants
@@ -659,87 +669,7 @@ registered Cognito callback/logout URL.
 
 ---
 
-## 13. Build, deploy, operate
-
-Full instructions are in [`DEPLOYMENT.md`](docs/DEPLOYMENT.md). Region and account come from your
-active AWS session; set `AWS_REGION` once and everything follows. Names are suffix-free by default —
-add `ENV_NAME=<name>` (scripts) / `-c envName=<name>` (CDK) only if you want a second isolated copy.
-
-```
-# Region for the whole session — everything derives from this + your AWS creds.
-export AWS_REGION=<your-region>            # e.g. REGION ; also used as CDK_DEFAULT_REGION
-export CDK_DEFAULT_REGION="$AWS_REGION"
-
-# 0. AWS creds — this is an Isengard-style account, so the session expires often
-aws login                       # re-run whenever you see "session expired"
-
-# 1. Docker base images come from public ECR — log in first (ecr-public is us-east-1 only)
-aws ecr-public get-login-password --region us-east-1 \
-  | docker login --username AWS --password-stdin public.ecr.aws
-
-cd infra
-npm install
-
-# 2. App module first — web app, Cognito, SSM runtime config (NO Connect yet)
-npx cdk deploy AnyCompanyPayAppStack --require-approval never
-POOL=<new-pool-id> bash provision-merchants.sh          # 5 merchants x 2 users into the new pool
-
-# 3. Connect module — instance, Cases, Customer Profiles, chat flows/queue/routing profile.
-#    It automates what used to be manual console steps and merges its config into SSM.
-npx cdk deploy AnyCompanyPayConnectStack --require-approval never
-D=anycompany-pay-customer-profile bash provision-customer-profiles.sh
-AGENT_EMAIL="agent1@anycompany-pay.example" bash provision-agent.sh   # the agent who answers chats
-
-# 4. Database module — Aurora PostgreSQL (private) + 200 seeded transactions.
-#    Independent of the app/Connect stacks (its own VPC). No Docker needed.
-cd ../database && npm install
-npx cdk deploy AnyCompanyPayAuroraStack --require-approval never
-
-# 5. Zero-ETL + Search API module — private OpenSearch Serverless collection, OSIS
-#    pipeline (Aurora->OpenSearch), and the GET-only Search API. Reads the Aurora
-#    outputs + the app's Cognito/ECS/SSM and merges searchApiUrl into the runtime config.
-cd ../opensearch-zeroetl && bash deploy.sh   # discovers upstream outputs, passes them as -c context
-
-# 6. Agentic self-service — tool + interceptor Lambdas AND the AgentCore Gateway,
-#    tool target, and interceptor (all native AWS::BedrockAgentCore::* resources).
-cd ../connect-ai-agent && bash deploy.sh   # discovers dbVpc/collection/Connect-instance outputs, passes -c context
-# then the Q-in-Connect prompt/agent + Self-Service binding:
-bash provision-ai-agent.sh --apply --set-default
-# and the console-only wiring (create AI domain, register MCP server):
-#   see "§2. One-time Connect setup" in the quick start above
-```
-
-> **Search feature depends on the app + database modules.** The zero-ETL stack imports Aurora's
-> VPC/subnets/secret and the app's Cognito pool/client, ECS cluster/service, and SSM parameter, so
-> deploy it **after** both. It's the only module that needs the OpenSearch/OSIS pieces; the app and
-> Connect modules run fine without it (the Transactions nav item is feature-gated on `searchApiUrl`).
-> For the zero-ETL internals, the four fixes that make the private-collection load work, and status
-> seeding, see [`DEPLOYMENT.md`](docs/DEPLOYMENT.md) §17.
-
-**Why this order & shape:** the app module stands alone (login + dashboards work with Connect
-features feature-gated off). The connect module depends on the app module (imports its Cognito /
-CloudFront / ECS), and on deploy it **merges** the Connect values into the shared SSM parameter and
-forces an ECS redeploy — so the running app picks up Cases/chat with no rebuild and no circular
-dependency. See [`DEPLOYMENT.md`](docs/DEPLOYMENT.md) §6b "Modular deployment".
-
-> **No manual console steps.** The Customer Profiles domain + KMS key and the
-> Cases-domain→instance association are all created by `AnyCompanyPayConnectStack` (CDK) — there is
-> **no** manual console click.
-
-> **Connect instance quota.** Creating the Connect instance needs quota `L-AA17A6B9` raised if the
-> account is at its limit (default 2).
-
-**Frequent gotcha:** the AWS session expires often — if a `cdk deploy`, `aws`, or provisioning
-command fails with "session expired", run `aws login` and retry.
-
-**Teardown:** run [`cleanup.sh`](cleanup.sh) (dry-run by default; `--apply` to delete). It destroys the
-CDK stacks — including the AgentCore gateway now that it's CDK-managed — plus the console-created bits
-CloudFormation doesn't own (Q in Connect domain/agent, Lex bot, claimed phone number). See
-[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) §12 (disassociate Cases from the instance first).
-
----
-
-## 14. Related docs
+## 13. Related docs
 
 All guides live under [`docs/`](docs/):
 
