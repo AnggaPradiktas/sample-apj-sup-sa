@@ -13,6 +13,7 @@ flowchart TB
     Cognito["Cognito User Pool<br/>(OIDC IdP)"]
     Secrets["Secrets Manager<br/>DB · JWT · OIDC secret"]
     Logs["CloudWatch Logs + alarm"]
+    CWOTLP["CloudWatch OTLP endpoint<br/>Coding Agent Insights"]
 
     subgraph VPC["VPC · 2 AZs · 1 NAT"]
       R53["Route 53<br/>Private Hosted Zone"]
@@ -20,8 +21,9 @@ flowchart TB
         NAT["NAT Gateway"]
       end
       subgraph App["Application subnets (private + egress)"]
-        ALB["Internal ALB<br/>HTTPS :443"]
+        ALB["Internal ALB<br/>HTTPS :443 · :4318"]
         ECS["ECS Fargate<br/>claude gateway :8080"]
+        COL["ECS Fargate<br/>ADOT collector :4318"]
         VPCE["VPC endpoints<br/>Bedrock · SM · ECR · Logs · S3"]
       end
       subgraph Db["Database subnets (isolated)"]
@@ -42,6 +44,9 @@ flowchart TB
   ECS -->|"OIDC egress"| NAT
   ECS -->|"AWS services"| VPCE
   VPCE -->|"InvokeModel"| Bedrock
+  ECS -->|"OTLP relay :4318"| ALB
+  ALB -->|":4318"| COL
+  COL -->|"SigV4 · via Monitoring endpoint"| CWOTLP
 ```
 
 CloudFront and public DNS are intentionally **not** on the login path: the Claude
@@ -70,6 +75,11 @@ starting the gateway login flow.
    Serverless v2** (isolated subnets, reachable only from the gateway tasks).
 6. Inference requests are translated and forwarded to **Amazon Bedrock** using the
    ECS task role (no static keys).
+7. **Telemetry**: signed-in clients export OTLP metrics to the gateway (the gateway
+   pushes the exporter settings and the CLI stamps the user's identity). The gateway
+   relays them over HTTPS to the ALB's **:4318** listener, which forwards to the **ADOT
+   collector**. The collector SigV4-signs them into the CloudWatch OTLP endpoint, which
+   feeds **Coding Agent Insights**.
 
 ## Network isolation
 
@@ -79,7 +89,7 @@ hop:
 | Tier | Subnet type | Holds | Ingress allowed from |
 |---|---|---|---|
 | Public | `PUBLIC` | NAT Gateway | — |
-| Application | `PRIVATE_WITH_EGRESS` | Internal ALB, Fargate tasks, VPC endpoint ENIs | ALB: 443 from `allowedClientCidrs`; Tasks: 8080 from ALB SG only; Endpoints: 443 from task SG only |
+| Application | `PRIVATE_WITH_EGRESS` | Internal ALB, Fargate tasks, VPC endpoint ENIs | ALB: 443 from `allowedClientCidrs`, 4318 from gateway task SG only; Tasks: 8080 from ALB SG only; Collector: 4318 + 13133 (health) from ALB SG only; Endpoints: 443 from task and collector SGs only |
 | Database | `PRIVATE_ISOLATED` | Aurora PostgreSQL Serverless v2 | 5432 from task SG only |
 
 ## Key resources
@@ -113,3 +123,12 @@ hop:
   application-inference-profile / provisioned-model / foundation-model ARNs.
 - **Observability** — CloudWatch log group (one-month retention) and an alarm on
   unhealthy target hosts.
+- **Telemetry collector** (`enableTelemetry: true`, default) — ADOT collector on ECS
+  Fargate ARM64 (256 CPU / 512 MiB ×2), metrics pipeline only
+  (`otlp` → `memory_limiter` + `batch` → `otlphttp` + `sigv4auth` to
+  `monitoring.<region>.amazonaws.com/v1/metrics`). Task role limited to
+  `cloudwatch:PutMetricData`; read-only root filesystem, all Linux capabilities
+  dropped. It sits behind a dedicated ALB HTTPS listener on 4318 with the gateway's
+  certificate; the target-group health check hits the collector's `health_check`
+  extension on 13133. An alarm fires when no collector target is healthy, because the
+  gateway doesn't buffer telemetry.

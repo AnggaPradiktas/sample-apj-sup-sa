@@ -69,6 +69,32 @@ managed:
 POLICY
 fi
 
+if [ -n "${TELEMETRY_FORWARD_URL:-}" ]; then
+  # Relay Claude Code OTLP metrics to the ADOT collector behind the ALB's OTLP
+  # listener; it SigV4-signs them into the CloudWatch OTLP endpoint (Coding Agent
+  # Insights). With forward_to + public_url set, the gateway pushes the OTEL
+  # exporter settings to every signed-in client and stamps user.id / user.email /
+  # user.groups from the session. Logs and traces stay off: they can carry bash
+  # commands, file paths and tool inputs.
+  cat >> "$GATEWAY_CONFIG_PATH" <<TELEMETRY
+
+telemetry:
+  forward_to:
+    - url: ${TELEMETRY_FORWARD_URL}
+      metrics: true
+      logs: false
+      traces: false
+TELEMETRY
+  if [ -n "${TELEMETRY_RESOURCE_ATTRIBUTES:-}" ]; then
+    # "k=v,k=v" -> YAML map; values are quoted so numbers/booleans stay strings.
+    # Names and values are validated at synth time (lib/config.ts).
+    printf "  resource_attributes:\n" >> "$GATEWAY_CONFIG_PATH"
+    printf "%s\n" "$TELEMETRY_RESOURCE_ATTRIBUTES" | tr ',' '\n' | while IFS='=' read -r name value; do
+      [ -n "$name" ] && printf '    %s: "%s"\n' "$name" "$value" >> "$GATEWAY_CONFIG_PATH"
+    done
+  fi
+fi
+
 if [ "${1:-}" = "--render-only" ]; then
   cat "$GATEWAY_CONFIG_PATH"
   exit 0

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="${1:-${CLAUDE_VERSION:-2.1.195}}"
+VERSION="${1:-${CLAUDE_VERSION:-2.1.285}}"
 PLATFORM="${CLAUDE_PLATFORM:-linux-arm64}"
 REPO="${CLAUDE_RELEASE_REPO:-https://downloads.claude.ai/claude-code-releases}"
 KEY_URL="${CLAUDE_SIGNING_KEY_URL:-https://downloads.claude.ai/keys/claude-code.asc}"
