@@ -69,7 +69,34 @@ public IP, Claude Code gateway login can fail before it reaches the gateway.
 Then start Claude Code and run `/login`. The Cloud gateway path should use your
 gateway URL, open the Cognito login flow, and complete the gateway session.
 
+## Verify telemetry (Coding Agent Insights)
+
+After a developer signs in and uses Claude Code for a minute or two:
+
+1. Open CloudWatch → **GenAI Observability** → **Coding Agent Insights** → **Claude Code**.
+2. Or query in **Query Studio** (PromQL):
+
+   ```promql
+   sum by ("user.email") ({"claude_code.cost.usage"})
+   sum by ("type") ({"claude_code.token.usage"})
+   ```
+
+3. From a machine with AWS credentials, the same query over the PromQL API (SigV4, service
+   `monitoring`) returns `"status":"success"` with one series per developer.
+
+The gateway log shows `telemetry relay: 1 destination(s), signals enabled: metrics` at boot.
+
 ## Troubleshooting
+
+**No Claude Code metrics in CloudWatch**
+- Check the `CollectorLogGroupName` log group for exporter errors, such as `403` when the
+  task role lacks `cloudwatch:PutMetricData`, or timeouts reaching the Monitoring endpoint.
+- Check the gateway log for failed deliveries to `:4318`. After five failures in a row the
+  gateway pauses forwarding in 30-second intervals, and it never buffers.
+- Confirm the `CollectorUnhealthyAlarm` is `OK` and the collector target group is healthy.
+- Confirm the developer accepted the one-time security prompt for the pushed telemetry
+  settings, and that the gateway runs Claude Code **2.1.281 or later** (needed for
+  `resource_attributes`).
 
 **`Gateway hosts must be on your organization's private network`**
 - The hostname resolved to at least one public IP from the Claude Code machine.

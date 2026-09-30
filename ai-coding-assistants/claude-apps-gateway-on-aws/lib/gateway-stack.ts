@@ -15,7 +15,13 @@ import * as rds from "aws-cdk-lib/aws-rds";
 import * as route53 from "aws-cdk-lib/aws-route53";
 import * as route53Targets from "aws-cdk-lib/aws-route53-targets";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
-import { GatewayConfig, GATEWAY_CONTAINER_PORT } from "./config";
+import {
+  COLLECTOR_HEALTH_PORT,
+  GatewayConfig,
+  GATEWAY_CONTAINER_PORT,
+  OTLP_LISTENER_PORT,
+  validateResourceAttributes
+} from "./config";
 
 export interface GatewayStackProps extends cdk.StackProps {
   readonly config: GatewayConfig;
@@ -26,7 +32,12 @@ export class GatewayStack extends Stack {
     super(scope, id, props);
 
     const { config } = props;
+    validateResourceAttributes(config.telemetryResourceAttributes);
     const publicUrl = `https://${config.gatewayHost}`;
+    // The gateway relays client OTLP to the collector through the internal ALB on
+    // its own HTTPS port. The gateway only forwards to https:// (or loopback), so a
+    // dedicated listener keeps its SSRF guard intact (no CLAUDE_GATEWAY_ALLOW_LOOPBACK).
+    const otlpForwardUrl = `${publicUrl}:${OTLP_LISTENER_PORT}`;
     const callbackUrl = `${publicUrl}/oauth/callback`;
 
     const vpc = new ec2.Vpc(this, "GatewayVpc", {
@@ -76,6 +87,23 @@ export class GatewayStack extends Stack {
       "ALB to gateway HTTP"
     );
 
+    let collectorSecurityGroup: ec2.SecurityGroup | undefined;
+    if (config.enableTelemetry) {
+      // Only gateway tasks may reach the OTLP listener; developer CIDRs get 443 only.
+      albSecurityGroup.addIngressRule(
+        taskSecurityGroup,
+        ec2.Port.tcp(OTLP_LISTENER_PORT),
+        "Gateway telemetry relay to OTLP listener"
+      );
+      collectorSecurityGroup = new ec2.SecurityGroup(this, "CollectorSecurityGroup", {
+        vpc,
+        description: "Allow only the internal ALB to reach the OTLP collector",
+        allowAllOutbound: true
+      });
+      collectorSecurityGroup.addIngressRule(albSecurityGroup, ec2.Port.tcp(OTLP_LISTENER_PORT), "ALB to collector OTLP/HTTP");
+      collectorSecurityGroup.addIngressRule(albSecurityGroup, ec2.Port.tcp(COLLECTOR_HEALTH_PORT), "ALB health check to collector");
+    }
+
     // Interface + S3 gateway endpoints keep AWS-service traffic (Bedrock
     // inference, secrets reads, image pulls, log delivery) on the AWS backbone
     // instead of the NAT-to-internet path. The S3 gateway is required for ECR:
@@ -97,6 +125,14 @@ export class GatewayStack extends Stack {
         ec2.Port.tcp(443),
         "Gateway tasks to VPC endpoints"
       );
+      if (collectorSecurityGroup) {
+        // Collector reaches CloudWatch Monitoring (OTLP metrics), ECR and Logs over the endpoints.
+        endpointSecurityGroup.addIngressRule(
+          collectorSecurityGroup,
+          ec2.Port.tcp(443),
+          "Collector tasks to VPC endpoints"
+        );
+      }
 
       const interfaceEndpoints: Array<[string, ec2.InterfaceVpcEndpointAwsService]> = [
         ["BedrockRuntimeEndpoint", ec2.InterfaceVpcEndpointAwsService.BEDROCK_RUNTIME],
@@ -259,7 +295,15 @@ export class GatewayStack extends Stack {
         GATEWAY_PUBLIC_URL: publicUrl,
         OIDC_ALLOWED_EMAIL_DOMAINS: config.allowedEmailDomains.join(","),
         OIDC_CLIENT_ID: userPoolClient.userPoolClientId,
-        OIDC_ISSUER: `https://cognito-idp.${this.region}.amazonaws.com/${userPool.userPoolId}`
+        OIDC_ISSUER: `https://cognito-idp.${this.region}.amazonaws.com/${userPool.userPoolId}`,
+        ...(config.enableTelemetry
+          ? {
+              TELEMETRY_FORWARD_URL: otlpForwardUrl,
+              TELEMETRY_RESOURCE_ATTRIBUTES: Object.entries(config.telemetryResourceAttributes)
+                .map(([k, v]) => `${k}=${v}`)
+                .join(",")
+            }
+          : {})
       },
       secrets: {
         GATEWAY_DB_PASSWORD: ecs.Secret.fromSecretsManager(dbCredentials, "password"),
@@ -371,6 +415,10 @@ export class GatewayStack extends Stack {
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING
     });
 
+    if (config.enableTelemetry && collectorSecurityGroup) {
+      this.addTelemetryCollector(config, cluster, loadBalancer, certificate, collectorSecurityGroup);
+    }
+
     // The private zone is scoped to the gateway FQDN itself (alias record at the
     // zone apex), NOT to hostedZoneName. A VPC-associated private zone is
     // authoritative for its entire zone name, so a zone at the domain apex would
@@ -410,5 +458,145 @@ export class GatewayStack extends Stack {
     new cdk.CfnOutput(this, "LogGroupName", {
       value: logGroup.logGroupName
     });
+  }
+
+  /**
+   * ADOT collector behind the ALB's OTLP listener. It receives the gateway's relayed
+   * OTLP metrics and SigV4-signs them into the CloudWatch OTLP endpoint with its task
+   * role, so no long-lived CloudWatch API key exists anywhere. Metrics then populate
+   * CloudWatch > GenAI Observability > Coding Agent Insights.
+   */
+  private addTelemetryCollector(
+    config: GatewayConfig,
+    cluster: ecs.Cluster,
+    loadBalancer: elbv2.ApplicationLoadBalancer,
+    certificate: certificatemanager.ICertificate,
+    securityGroup: ec2.SecurityGroup
+  ): void {
+    const taskDefinition = new ecs.FargateTaskDefinition(this, "CollectorTaskDefinition", {
+      cpu: 256,
+      memoryLimitMiB: 512,
+      runtimePlatform: {
+        cpuArchitecture: ecs.CpuArchitecture.ARM64,
+        operatingSystemFamily: ecs.OperatingSystemFamily.LINUX
+      }
+    });
+    taskDefinition.taskRole.addToPrincipalPolicy(
+      new iam.PolicyStatement({
+        sid: "PublishOtlpMetricsToCloudWatch",
+        // The CloudWatch OTLP metrics endpoint authorizes SigV4 requests with this action.
+        actions: ["cloudwatch:PutMetricData"],
+        resources: ["*"]
+      })
+    );
+
+    const logGroup = new logs.LogGroup(this, "CollectorLogGroup", {
+      retention: logs.RetentionDays.ONE_MONTH,
+      removalPolicy: RemovalPolicy.DESTROY
+    });
+
+    // Metrics only: Claude Code logs and traces can carry bash commands, file paths
+    // and tool inputs, so the gateway forwards metrics alone (see render-gateway-config.sh).
+    const collectorConfig = [
+      "extensions:",
+      "  health_check:",
+      `    endpoint: 0.0.0.0:${COLLECTOR_HEALTH_PORT}`,
+      "  sigv4auth:",
+      `    region: ${this.region}`,
+      "    service: monitoring",
+      "receivers:",
+      "  otlp:",
+      "    protocols:",
+      "      http:",
+      `        endpoint: 0.0.0.0:${OTLP_LISTENER_PORT}`,
+      "processors:",
+      "  memory_limiter:",
+      "    check_interval: 1s",
+      "    limit_percentage: 80",
+      "    spike_limit_percentage: 20",
+      "  batch:",
+      "    send_batch_size: 200",
+      "    timeout: 10s",
+      "exporters:",
+      "  otlphttp/cloudwatch:",
+      `    metrics_endpoint: https://monitoring.${this.region}.${this.urlSuffix}/v1/metrics`,
+      "    auth:",
+      "      authenticator: sigv4auth",
+      "    retry_on_failure:",
+      "      enabled: true",
+      "    sending_queue:",
+      "      enabled: true",
+      "service:",
+      "  extensions: [health_check, sigv4auth]",
+      "  pipelines:",
+      "    metrics:",
+      "      receivers: [otlp]",
+      "      processors: [memory_limiter, batch]",
+      "      exporters: [otlphttp/cloudwatch]",
+      ""
+    ].join("\n");
+
+    const container = taskDefinition.addContainer("CollectorContainer", {
+      image: ecs.ContainerImage.fromRegistry(config.collectorImage),
+      logging: ecs.LogDrivers.awsLogs({ streamPrefix: "collector", logGroup }),
+      environment: { AOT_CONFIG_CONTENT: collectorConfig },
+      readonlyRootFilesystem: true,
+      linuxParameters: new ecs.LinuxParameters(this, "CollectorLinuxParameters", {})
+    });
+    container.linuxParameters?.dropCapabilities(ecs.Capability.ALL);
+    container.addPortMappings(
+      { containerPort: OTLP_LISTENER_PORT, protocol: ecs.Protocol.TCP },
+      { containerPort: COLLECTOR_HEALTH_PORT, protocol: ecs.Protocol.TCP }
+    );
+
+    const service = new ecs.FargateService(this, "CollectorService", {
+      cluster,
+      taskDefinition,
+      desiredCount: config.collectorDesiredCount,
+      assignPublicIp: false,
+      minHealthyPercent: 100,
+      securityGroups: [securityGroup],
+      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+      circuitBreaker: { rollback: true },
+      healthCheckGracePeriod: Duration.seconds(30)
+    });
+
+    // Same hostname and certificate as the gateway listener; reachable only from
+    // gateway tasks (albSecurityGroup ingress on this port is scoped to the task SG).
+    const listener = loadBalancer.addListener("OtlpListener", {
+      port: OTLP_LISTENER_PORT,
+      protocol: elbv2.ApplicationProtocol.HTTPS,
+      certificates: [certificate],
+      sslPolicy: elbv2.SslPolicy.RECOMMENDED_TLS,
+      open: false
+    });
+    const targetGroup = listener.addTargets("CollectorTargets", {
+      protocol: elbv2.ApplicationProtocol.HTTP,
+      port: OTLP_LISTENER_PORT,
+      targets: [service.loadBalancerTarget({ containerName: container.containerName, containerPort: OTLP_LISTENER_PORT })],
+      healthCheck: {
+        enabled: true,
+        port: String(COLLECTOR_HEALTH_PORT),
+        path: "/",
+        healthyHttpCodes: "200",
+        interval: Duration.seconds(15),
+        healthyThresholdCount: 2,
+        unhealthyThresholdCount: 3
+      },
+      deregistrationDelay: Duration.seconds(30)
+    });
+
+    // The gateway doesn't buffer telemetry: while no collector is healthy, exports are dropped.
+    new cloudwatch.Alarm(this, "CollectorUnhealthyAlarm", {
+      alarmDescription: "No healthy OTLP collector targets - Claude Code telemetry is being dropped",
+      metric: targetGroup.metrics.healthyHostCount({ period: Duration.minutes(1), statistic: "min" }),
+      threshold: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+      evaluationPeriods: 3,
+      treatMissingData: cloudwatch.TreatMissingData.BREACHING
+    });
+
+    new cdk.CfnOutput(this, "OtlpForwardUrl", { value: `https://${config.gatewayHost}:${OTLP_LISTENER_PORT}` });
+    new cdk.CfnOutput(this, "CollectorLogGroupName", { value: logGroup.logGroupName });
   }
 }
