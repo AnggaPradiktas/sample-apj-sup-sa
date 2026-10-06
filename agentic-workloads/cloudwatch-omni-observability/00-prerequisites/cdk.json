@@ -1,0 +1,16 @@
+{
+  "app": "python3 app.py",
+  "context": {
+    "domainId": "",
+    "spaceName": "omni-samples",
+    "adminPrincipalArn": "",
+    "agentCoreEvaluationRoleArn": "",
+    "shopLogGroupName": "/omni-samples/shop",
+    "alertEmail": "",
+    "enableTransactionSearch": false,
+    "attachModelInferencePolicy": true,
+    "attachAwsIntegrationPolicy": true,
+    "adoptExistingSpace": false,
+    "retainSpaceOnDelete": true
+  }
+}

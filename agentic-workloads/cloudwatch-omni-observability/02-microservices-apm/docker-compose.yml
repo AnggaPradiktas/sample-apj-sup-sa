@@ -1,0 +1,73 @@
+# Start with ./up.sh. It exports short-lived AWS credentials for the collector and
+# reads ../.env for AWS_REGION and SHOP_LOG_GROUP.
+
+x-otel-env: &otel-env
+  # Same variables as "Send application telemetry › Step 2" in the Omni docs.
+  # service.namespace groups the three services into one application on the map.
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+  OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+  OTEL_TRACES_EXPORTER: otlp
+  OTEL_METRICS_EXPORTER: otlp
+  OTEL_LOGS_EXPORTER: otlp
+  OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED: "true"
+  OTEL_METRIC_EXPORT_INTERVAL: "15000"
+  # Drop the per-request ASGI "http send/receive" internal spans.
+  OTEL_PYTHON_FASTAPI_EXCLUDE_SPANS: "receive,send"
+
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.162.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ../common/otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    environment:
+      AWS_REGION: ${AWS_REGION:?set AWS_REGION in ../.env}
+      SHOP_LOG_GROUP: ${SHOP_LOG_GROUP:-/omni-samples/shop}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:?run via ./up.sh}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:?run via ./up.sh}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+    # Published on 127.0.0.1 only. The collector signs whatever it receives with your AWS
+    # credentials, and payments exposes an unauthenticated /chaos switch.
+    ports:
+      - "127.0.0.1:4317:4317"
+      - "127.0.0.1:4318:4318"
+
+  frontend:
+    build: .
+    command: opentelemetry-instrument uvicorn shop.frontend:app --host 0.0.0.0 --port 8000
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: frontend
+      OTEL_RESOURCE_ATTRIBUTES: service.namespace=shop,deployment.environment.name=demo
+      ORDERS_URL: http://orders:8000
+    ports: ["127.0.0.1:8000:8000"]
+    depends_on: [otel-collector, orders]
+
+  orders:
+    build: .
+    command: opentelemetry-instrument uvicorn shop.orders:app --host 0.0.0.0 --port 8000
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: orders
+      OTEL_RESOURCE_ATTRIBUTES: service.namespace=shop,deployment.environment.name=demo
+      PAYMENTS_URL: http://payments:8000
+    ports: ["127.0.0.1:8001:8000"]
+    depends_on: [otel-collector, payments]
+
+  payments:
+    build: .
+    command: opentelemetry-instrument uvicorn shop.payments:app --host 0.0.0.0 --port 8000
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: payments
+      OTEL_RESOURCE_ATTRIBUTES: service.namespace=shop,deployment.environment.name=demo
+    ports: ["127.0.0.1:8002:8000"]
+    depends_on: [otel-collector]
+
+  loadgen:
+    build: .
+    command: python loadgen.py
+    environment:
+      FRONTEND_URL: http://frontend:8000
+      RPS: ${RPS:-2}
+    depends_on: [frontend]
