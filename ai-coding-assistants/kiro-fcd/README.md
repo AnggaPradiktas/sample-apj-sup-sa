@@ -13,7 +13,9 @@ Kiro 소개와 고객 대화를 위한 한국어 프레젠테이션입니다.
 
 ## 배포
 
-`.github/workflows/deploy-kiro-fcd.yml`이 `main` 브랜치에서 이 디렉토리의 변경을 감지해 GitHub Pages에 배포합니다. 배포 산출물에는 이 프레젠테이션 디렉토리만 포함됩니다.
+`main` 브랜치에는 편집할 HTML과 안내 문서를 보관합니다. GitHub Pages는 `gh-pages` 브랜치의 정적 파일을 게시하며, 게시 브랜치에는 이 프레젠테이션 디렉토리와 루트 안내 페이지만 포함됩니다.
+
+장표를 갱신할 때는 `main`의 `index.html`을 업데이트한 뒤 같은 파일을 게시 브랜치의 `ai-coding-assistants/kiro-fcd/index.html`에도 반영합니다. `.nojekyll`로 HTML을 변환 없이 제공합니다.
 
 ## 라이선스
 
