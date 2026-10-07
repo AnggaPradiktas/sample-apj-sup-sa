@@ -164,6 +164,16 @@ export class AnyCompanyPayConnectStack extends cdk.Stack {
       hoursOfOperationArn: hours.attrHoursOfOperationArn,
     });
 
+    // OPT-IN routing module (connect-routing/): its tier chat queues, as
+    // "vip,key,shared" queue ARNs. When supplied, this profile's users (agent1,
+    // admin) also serve those queues, so they keep receiving merchant chats once
+    // chats are routed by tier. Omitted -> the profile is exactly as before.
+    const routingQueueArns = ((this.node.tryGetContext("routingQueueArns") as string | undefined) ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const routingQueuePriority = [1, 1, 2]; // vip, key-account, shared (design §6.2)
+
     const chatRoutingProfile = new connect.CfnRoutingProfile(this, "ChatRoutingProfile", {
       instanceArn: connectInstance.attrArn,
       name: `anycompany-pay-chat${sfx}`,
@@ -176,6 +186,11 @@ export class AnyCompanyPayConnectStack extends cdk.Stack {
           priority: 1,
           queueReference: { channel: "CHAT", queueArn: supportQueue.attrQueueArn },
         },
+        ...routingQueueArns.map((queueArn, i) => ({
+          delay: 0,
+          priority: routingQueuePriority[i] ?? 2,
+          queueReference: { channel: "CHAT", queueArn },
+        })),
       ],
     });
 
@@ -540,6 +555,12 @@ export class AnyCompanyPayConnectStack extends cdk.Stack {
       content: this.toJsonString(caseFlowContent),
     });
 
+    // OPT-IN routing module (connect-routing/): when its routed chat flow ARN is
+    // supplied, merchant chats (standalone and case-initiated) start in that flow
+    // instead — case-owner routing + after-hours backlog. Omitted -> the flows
+    // above are used exactly as before.
+    const routingFlowArn = this.node.tryGetContext("routingFlowArn") as string | undefined;
+
     // ------------------------------------------------------------------
     // Cases API: Lambda behind an API Gateway HTTP API + Cognito JWT authorizer.
     // ------------------------------------------------------------------
@@ -624,8 +645,8 @@ export class AnyCompanyPayConnectStack extends cdk.Stack {
       bundling: { minify: true, target: "node22", externalModules: [] },
       environment: {
         CONNECT_INSTANCE_ID: connectInstance.attrId,
-        CONTACT_FLOW_ARN: chatFlow.attrContactFlowArn,
-        CASE_CONTACT_FLOW_ARN: chatCaseFlow.attrContactFlowArn,
+        CONTACT_FLOW_ARN: routingFlowArn || chatFlow.attrContactFlowArn,
+        CASE_CONTACT_FLOW_ARN: routingFlowArn || chatCaseFlow.attrContactFlowArn,
         // For validating that a case-initiated chat's caseId belongs to the caller.
         CASES_DOMAIN_ID: casesDomain.attrDomainId,
         FIELD_MERCHANT_ID: fMerchantId.attrFieldId,

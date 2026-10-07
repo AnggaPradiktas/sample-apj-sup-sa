@@ -7,7 +7,8 @@ This is a **Amazon Connect + Amazon Bedrock AgentCore** sample built on a paymen
 > **Documentation index** — this README is the conceptual guide. Everything else
 > lives in [`docs/`](docs/):
 > [`DEPLOYMENT.md`](docs/DEPLOYMENT.md) (deploy/operate),
-> [`connect-ai-agent/README.md`](connect-ai-agent/README.md) (the AI Q&A module).
+> [`connect-ai-agent/README.md`](connect-ai-agent/README.md) (the AI Q&A module),
+> [`connect-routing/README.md`](connect-routing/README.md) (opt-in case-owner routing + after-hours backlog).
 > The app also ships a public developer-docs page at `/docs` (`src/pages/Docs.tsx`).
 
 ---
@@ -134,6 +135,19 @@ can reset the orchestrator binding). Each script also accepts explicit overrides
 I have?"* You should get a tenant-correct answer, and the gateway + interceptor CloudWatch log groups
 should show a `tools/call` with the injected `merchant_id`.
 
+### Optional — case-owner routing + after-hours backlog
+```
+cd connect-routing
+bash deploy.sh             # routing stack + switch merchant chats to the routed flow
+bash provision-tiers.sh    # merchant tier on Customer Profiles (Luxe=VIP, Nova=key, rest shared)
+bash provision-agents.sh   # agent-live1/2 (RP-Live) + agent-ooh1 (RP-OOH-Backlog)
+```
+Opt-in and additive: new hours, tier queues, an after-hours task queue, two routing profiles, Cases
+fields, two Lambdas and two new flows; the existing flows are untouched and `agent1` / admin also get
+the tier queues. `DEMO_MODE=1 bash deploy.sh` forces the after-hours path during the day;
+`UNWIRE=1 bash deploy.sh` switches chats back to the original flows. See
+[`connect-routing/README.md`](connect-routing/README.md).
+
 ### 3. Clean up and tear down everything
 
 ```
@@ -169,8 +183,15 @@ Uses the same region/env resolution as deploy. Override with `REGION=<REGION>`, 
   **their own** transactions in natural language; Amazon Lex routes to a **Q in Connect** orchestrator
   that calls the `query_transactions` **MCP tool** through an **AgentCore Gateway**. A request
   interceptor injects the trusted `merchant_id` from the Connect contact so the tool only ever returns
-  the caller's rows — the tenant is **never** supplied by the model. The gateway, its tool target, and
-  the interceptor are native `AWS::BedrockAgentCore::*` CDK resources.
+  the caller's rows — the tenant is **never** supplied by the model (the tool reads it only from the
+  interceptor's top-level reserved key, so a model-nested value is ignored). The gateway, its tool
+  target, and the interceptor are native `AWS::BedrockAgentCore::*` CDK resources.
+- **Case-owner routing + after-hours backlog (opt-in, `connect-routing/`)** — merchants are routed by
+  **tier** (VIP / key / shared queue and contact priority 1 / 2 / 5). A chat on an **open case** is
+  offered to the **case owner** first (preferred-agent routing step with an expiry, then the queue) at
+  priority 1, ahead of new contacts. **Out of hours** the chat is acknowledged and becomes one case per
+  merchant plus one **scheduled task** for the next opening, offered to backlog agents VIP → key →
+  shared.
 - **Customer Profiles (B2B model)** — merchants and their users mirrored into Amazon Connect Customer
   Profiles as account + individual profiles.
 - **Infrastructure as code, modular** — two independently-deployable AWS CDK stacks (app + Connect)
@@ -249,6 +270,7 @@ routing profile, and how the tenant threads through all of it — see [§6a](#6a
 | **OpenSearch Serverless collection** (`opensearch-zeroetl/`) | `SEARCH` collection `anycompany-pay-tx`, **VPC-only** (`AllowFromPublic:false`), reached via VPC endpoints | Fast search/filter over transactions without exposing the collection publicly |
 | **OpenSearch Ingestion (zero-ETL) pipeline** | `rds` source → serverless sink, Min1/Max2, attached to the Aurora VPC | Initial snapshot (Aurora→S3→index) + near-real-time CDC (WAL) with no custom ETL to maintain |
 | **Search API (`SearchApiFn`)** | HTTP API + Cognito JWT authorizer → Lambda **in the Aurora VPC** → the private collection; `GET /transactions`, `GET /transactions/{id}` | GET-only search; enforces tenant isolation by forcing `merchant_id` from the validated JWT |
+| **Routing module** (`connect-routing/`, opt-in) | CS hours (+ demo closed/open hours), tier chat queues + `ooh-followup` task queue, RP-Live / RP-OOH-Backlog, Cases fields `tier`/`ooh_task_pending`/`ooh_task_id` + OOH template, `ContactContextFn` + `OohSchedulerFn`, the routed chat flow and the OOH task flow, an SNS alert topic | A case is not routable: the flow reads the case owner and tier to set routing criteria + priority (Pattern A), and turns after-hours contacts into scheduled, prioritised tasks (Pattern B) |
 | **SSM runtime-config parameter** | `/anycompany-pay/<env>/runtime-config` (Cognito + Connect + `searchApiUrl` values) | Decouples the stacks: the app reads it as a secret; the Connect and zero-ETL stacks merge their values in and force an ECS redeploy — no rebuild, no circular dependency |
 
 ---
@@ -285,7 +307,8 @@ Merchants are multi-tenant: many users per merchant, and a merchant must never s
 - **5 merchants × 2 users** are provisioned in Cognito (`infra/provision-merchants.sh`), each in the
   `merchant` group and tagged with their `custom:merchant_id` / `custom:merchant_name`.
 - The Cases Lambda enforces isolation off the **validated JWT claim** (never a client value):
-  - **List** — a merchant sees only cases whose `merchant_id` equals their claim.
+  - **List** — a merchant sees only cases whose `merchant_id` equals their claim; the filter is applied
+    **inside the Cases search** (paged), then re-checked per row.
   - **Create** — `merchant_id` is **forced** from the claim; the form doesn't collect it.
   - **Read / comment / update** — the Lambda checks the case's `merchant_id` first and returns
     **403** on cross-tenant access.
@@ -404,7 +427,8 @@ by the tenant key `merchant_id`.
 | **Agent softphone (CCP)** | `amazon-connect-streams` | Admin → Contact Center (iframe) | Connect agent login (separate) |
 | **Ticketing (Cases)** | `@aws-sdk/client-connectcases` via `CasesApiFn` | Admin Cases + Merchant Support | Cognito (reused) |
 | **Live chat** | `amazon-connect-chatjs` + `StartChatContact` via `ChatApiFn` | Merchant Support | Cognito (reused) |
-| **Customer Profiles** | `@aws-sdk/client-customer-profiles` | Agent workspace lookups | — (data plane) |
+| **Customer Profiles** | `@aws-sdk/client-customer-profiles` | Agent workspace lookups; merchant tier | — (data plane) |
+| **Routing (opt-in)** | Flows + `ContactContextFn` / `OohSchedulerFn` | `connect-routing/` | — (contact attributes from `ChatApiFn`) |
 
 **Two sides of a chat, two SDKs, one global.** The **customer** side (merchant dashboard) uses
 **ChatJS**; the **agent** side (admin CCP) uses **Streams**. Both libraries attach to the same
@@ -425,11 +449,23 @@ Contact flow (anycompany-pay-chat-inbound OR anycompany-pay-chat-case)
 Support queue ──(routing profile with the CHAT channel enabled)──▶ Agent (agent1) in the CCP
 ```
 
+With the routing module wired, both chat types start in `anycompany-pay-chat-routed` instead:
+
+```
+ContactContextFn (tier from Customer Profiles; case owner + status from Cases) → Check hours
+  open   → [case chat on an open, owned case] Set routing criteria: owner, 60 s → priority 1
+         → [new issue] agentic self-service (Lex / Q in Connect) → Escalate
+         → priority by tier (1/2/5) → tier queue → agent
+  closed → OohSchedulerFn: reuse/create the merchant's case, schedule ONE task for the next opening
+         → acknowledge → end          (task → anycompany-pay-ooh-task flow → ooh-followup queue)
+```
+
 Everything except the agent user is created in CDK (`connect-stack.ts`): the instance, the approved
 origin for the CCP iframe, the Cases domain + fields + template, the Cases-domain→instance
 association, the Customer Profiles domain + KMS key, the hours of operation, the support queue, the
-`CHAT` routing profile, and both chat flows. The **agent user is created out-of-band**
-(`provision-agent.sh`) so no password lands in the CloudFormation template.
+`CHAT` routing profile, both chat flows, and the `agent1` / admin Connect users (a custom resource
+reads a Secrets Manager **generated** password, so no password lands in the template;
+`provision-agent.sh` remains for extra agents).
 
 ### How multi-tenancy threads through Connect
 
@@ -449,6 +485,10 @@ The same `merchant_id` that isolates Cases also isolates chat — and it is alwa
   `cases:GetCase` and only proceeds if the case's `merchant_id` matches the caller's tenant (else
   403 / 404). The transcript is later written back to that case via the same tenant-isolated comments
   endpoint.
+
+- **Routing never trusts a cross-tenant case.** The routing Lambdas route on the server-stamped
+  attributes and re-check the case's tenant: a contact whose `case_id` belongs to another merchant is
+  not linked to it, gets no owner step, and never gets an after-hours task on it.
 
 So a single claim — `custom:merchant_id` in the Cognito ID token — is the tenant boundary across
 Cases (a field on every case), chat (a contact attribute + the case-ownership check), and Customer
@@ -501,33 +541,12 @@ The practices this project deliberately follows (and why):
   rendered as React text nodes (never `innerHTML`).
 - **ChatJS/Streams isolation.** The customer chat (ChatJS) and agent CCP (Streams) libraries are kept
   off each other's pages via lazy/dynamic imports, avoiding the shared-`window.connect` conflict.
-- **No secrets in the template.** The Connect agent user is created by a script, not CloudFormation,
-  so no agent password is ever stored in the stack.
+- **No secrets in the template.** Connect users are created by a custom resource that reads a
+  Secrets Manager-generated password at deploy time, so no password is ever stored in the stack.
 
 - **Data at rest encrypted.** Aurora storage, the S3 export bucket (SSE-S3 + `BlockAll` +
   `enforceSSL`), and every Secrets Manager secret are encrypted; the Aurora cluster sits in
   `PRIVATE_ISOLATED` subnets with no internet gateway or NAT route.
-
-### Static analysis and accepted deviations
-
-Every synthesized template plus the standalone CloudFormation template are scanned with
-[Checkov](https://www.checkov.io/). The remaining findings are **demo-scope trade-offs**, not
-defects — each is a hardening step you would add for production, listed here so nothing is silent:
-
-| Finding | Why it's accepted here | For production |
-|---|---|---|
-| Secrets/log groups use AWS-managed keys (`CKV_AWS_149`, `CKV_AWS_158`) | Encrypted at rest; a CMK adds key administration to a demo | Supply a customer-managed KMS key |
-| No access logs on ALB / CloudFront / API Gateway / S3 (`CKV_AWS_91`, `86`, `95`, `18`) | Avoids provisioning log buckets and their lifecycle for a teardown-in-a-day sample | Enable access logging with a retention policy |
-| No WAF on CloudFront (`CKV_AWS_68`) | Per-month cost with no demo value | Attach a WAF web ACL |
-| Lambdas not in a VPC, no DLQ, no reserved concurrency (`CKV_AWS_117`, `116`, `115`) | These call AWS control-plane APIs only, and most are CDK-generated custom-resource handlers | Add DLQs and concurrency caps for anything customer-facing |
-| ALB listener is HTTP, not HTTPS (`CKV_AWS_2`, `CKV_AWS_103`) | The ALB is **internal** and only reachable from CloudFront over a VPC origin; TLS terminates at the edge | Terminate TLS on the ALB too if the VPC is untrusted |
-| CloudFront viewer cert is the default (`CKV_AWS_174`) | No custom domain, so the minimum TLS version isn't settable | Bring a custom domain + ACM certificate |
-| Aurora has no IAM auth or enhanced monitoring (`CKV_AWS_162`, `CKV_AWS_118`) | Access is via the generated Secrets Manager credential from inside the VPC only | Enable IAM database authentication and Performance Insights |
-| The OSIS pipeline role allows unconstrained write on one service (`CKV_AWS_111`) | Its actions are account-scoped and accept no resource-level ARN; the statement carries an inline justification | Narrow as service support lands |
-
-Also documented but not enabled: SSO for the CCP softphone (would require recreating the Connect
-instance as SAML); self-hosting the web font to drop the Google Fonts CSP allowance; the native Cases
-`CreateRelatedItem` (`Contact`) link for the agent-workspace chat-transcript view.
 
 ---
 
@@ -546,85 +565,12 @@ instance as SAML); self-hosting the web font to drop the Google Fonts CSP allowa
   start](#2-one-time-connect-setup-agentic-self-service-only). Deeper hardening (AgentCore Identity
   for signed per-merchant tokens, AgentCore Policy) is documented as additive upgrades in
   [`connect-ai-agent/README.md`](connect-ai-agent/README.md).
+- **Routing module scope.** Chat + task channels only (no SES email identity on the instance, so the
+  design's email cases don't apply); Cases rules / SLA alerts and quick-connect transfer flows are not
+  built. Owner routing needs the owner to have the tier queue in their routing profile (both new
+  profiles and `anycompany-pay-chat` do). See [`connect-routing/README.md`](connect-routing/README.md).
 
 ---
-
-## 10. Repository layout
-
-```
-.
-├── src/                         # React + Vite SPA
-│   ├── auth/                    # Cognito PKCE auth (AuthProvider, tokens, pkce, authConfig)
-│   ├── connect/                 # Runtime config, Cases/Chat/Search API clients, useConnectChat hook, transactionsApi
-│   ├── components/              # layout (Sidebar/Topbar/nav), chat/ (FloatingChat + ChatConversation), ui primitives
-│   ├── pages/
-│   │   ├── PersonaSelect.tsx    # landing page (role picker)
-│   │   ├── AuthCallback.tsx     # Cognito PKCE callback handler
-│   │   ├── Docs.tsx             # public developer-docs page (/docs)
-│   │   ├── admin/               # CaseManagement, ContactCenter (lazy)
-│   │   └── merchant/            # Transactions (OpenSearch), Support, SupportChat
-│   ├── data/                    # shared types
-│   └── App.tsx                  # routes (admin/* and merchant/* under RequireAuth)
-├── database/                    # Aurora PostgreSQL module (own CDK app: AnyCompanyPayAuroraStack)
-│   ├── lib/aurora-stack.ts      # VPC (isolated subnets), Aurora PG 18.4, logical replication, seed trigger
-│   └── lambda/seed/             # in-VPC seeder: creates transactions table + 200 multi-tenant rows
-├── opensearch-zeroetl/          # Zero-ETL + search module (own CDK app: AnyCompanyPayZeroEtlStack)
-│   ├── lib/zeroetl-stack.ts     # private OpenSearch Serverless collection, OSIS pipeline, Search API, SSM config merge
-│   └── lambda/
-│       ├── search-api/          # SearchApiFn: GET-only, JWT-derived tenant filter -> private collection
-│       ├── commerce-api/        # CommerceApiFn: POST /transactions, refunds + disputes, dispute->Connect Case
-│       └── config-writer/       # merges searchApiUrl + commerceApiUrl into the SSM runtime config + ECS redeploy
-├── connect-ai-agent/            # AI transaction Q&A module (own CDK app: AnyCompanyPayConnectAiAgentStack)
-│   ├── lib/
-│   │   ├── connect-ai-agent-stack.ts  # AgentCore Gateway + target + interceptor (AWS::BedrockAgentCore::*)
-│   │   │                              #   + tool/interceptor Lambdas + gateway exec role
-│   │   ├── lex-stack.ts               # Lex bot + alias for Q in Connect routing
-│   │   └── qic-domain-stack.ts        # Q in Connect domain (CDK-managed alternative to console step 1)
-│   ├── lambda/
-│   │   ├── transaction-tool/    # MCP tool: tenant-filtered OpenSearch query (read-only)
-│   │   ├── gateway-interceptor/ # AgentCore Gateway request interceptor (tenant gate, fail-closed)
-│   │   └── gateway-audience/    # custom resource: sets allowedAudience=[gatewayId] (self-reference)
-│   ├── deploy.sh                # deploy the AI-agent CDK stack
-│   ├── deploy-lex.sh            # Lex bot -> Q in Connect; redeploys connect stack with Lex context
-│   ├── deploy-qic-domain.sh     # deploy Q in Connect domain stack
-│   ├── provision-ai-agent.sh    # create Q in Connect orchestration prompt + agent; bind Self-Service
-│   └── provision-gateway.sh     # DEPRECATED — gateway is CDK now; legacy CLI path, guarded off
-├── infra/
-│   ├── lib/
-│   │   ├── app-stack.ts         # Module 1: VPC, ALB, CloudFront, ECS+SPA, Cognito, SSM config
-│   │   └── connect-stack.ts     # Module 2: Connect instance, Cases, Customer Profiles, chat flows/queue/routing profile
-│   ├── bin/app.ts               # instantiates the app + Connect stacks
-│   ├── cloudformation/          # standalone CFN template (anycompany-pay.yaml) + build-and-push helper
-│   ├── lambda/
-│   │   ├── cases-api/           # Cases API Lambda (role/tenant-aware)
-│   │   ├── chat-api/            # StartChatContact Lambda (tenant-stamped; case binding)
-│   │   ├── connect-user/        # Connect user provisioning Lambda
-│   │   └── config-writer/       # custom resource: merges Connect values into the SSM param + ECS redeploy
-│   ├── provision-merchants.sh          # merchant tenants + users in Cognito
-│   ├── provision-customer-profiles.sh  # Customer Profiles (B2B) for merchants
-│   ├── provision-agent.sh              # Connect agent user (answers chats) — no password in CFN
-│   └── provision-phone-number.sh       # claim an inbound voice number + associate a voice flow (idempotent)
-├── Dockerfile                   # multi-stage: node build -> nginx serve
-├── nginx.conf                   # SPA fallback, /healthz, asset caching
-├── 40-auth-config.sh            # container entrypoint: writes /auth-config.json from env
-├── cleanup.sh                   # full teardown (dry-run by default; --apply to delete)
-└── docs/                        # all documentation, diagrams, and console screenshots
-    ├── DEPLOYMENT.md            # detailed deploy/operate guide
-    └── *.drawio                 # architecture diagrams
-```
-
----
-
-## 11. Tech stack
-
-- **Frontend:** React 18, Vite 5, React Router 6, TypeScript, Tailwind CSS, Recharts,
-  `amazon-connect-streams` (agent CCP), `amazon-connect-chatjs` (customer chat).
-- **Infra:** AWS CDK (`aws-cdk-lib` 2.267, TypeScript); Node 22 Lambdas using
-  `@aws-sdk/client-connectcases` and `@aws-sdk/client-connect`.
-- **Data & search:** Aurora PostgreSQL 18.4 (`pg` in the seed Lambda), Amazon OpenSearch Serverless
-  (private collection), Amazon OpenSearch Ingestion (zero-ETL `rds` source), and
-  `@opensearch-project/opensearch` with `AwsSigv4Signer` (service `aoss`) in the Search Lambda.
-- **Runtime:** nginx (Alpine) in ECS Fargate; base images from `public.ecr.aws`.
 
 ### Why these choices
 
@@ -652,7 +598,7 @@ instance as SAML); self-hosting the web font to drop the Google Fonts CSP allowa
 
 ---
 
-## 12. Local development
+## 10. Local development
 
 ```
 npm install
@@ -663,24 +609,6 @@ npm run build        # tsc -b && vite build  (also the typecheck/lint gate)
 For auth/Connect features locally, provide `VITE_CONNECT_CCP_URL` / `VITE_CONNECT_REGION` (see
 `src/connect/config.ts`); otherwise those features degrade gracefully. `localhost:5173` is already a
 registered Cognito callback/logout URL.
-
----
-
-## 13. Related docs
-
-All guides live under [`docs/`](docs/):
-
-- [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — components, design decisions, users/groups,
-  multi-tenancy, Cases, Customer Profiles, CCP, teardown, and verification commands.
-- [§2. One-time Connect setup](#2-one-time-connect-setup-agentic-self-service-only) — console steps
-  for agentic self-service: create the Q in Connect AI domain and register the MCP server.
-- [`connect-ai-agent/README.md`](connect-ai-agent/README.md) — the AI transaction Q&A module
-  (Connect AI Agent Designer → AgentCore Gateway MCP → tenant-isolated OpenSearch tool): design,
-  trust chain, the AgentCore component decisions, and the CDK-managed gateway.
-- [`cleanup.sh`](cleanup.sh) — full, scoped teardown of everything this sample provisions
-  (dry-run by default).
-- Developer-docs page — a public `/docs` route in the app (`src/pages/Docs.tsx`) with the solution
-  architecture, agentic self-service, Amazon Connect, and tenant-isolation deep-dives and diagrams.
 
 ---
 

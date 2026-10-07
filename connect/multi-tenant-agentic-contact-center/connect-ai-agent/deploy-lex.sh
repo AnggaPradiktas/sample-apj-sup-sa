@@ -106,6 +106,17 @@ echo "==> Wiring the inbound chat flow to agentic self-service"
 echo "    redeploying $CONNECT_STACK with the Lex alias + QIC assistant context"
 echo "    agenticBotAliasArn=$BOT_ALIAS_ARN"
 echo "    qicAssistantArn=$ASSISTANT_ARN"
+# Keep the OPT-IN routing module wired if it is deployed (connect-routing/):
+# without this context the connect stack would switch merchant chats back to the
+# original flows.
+ROUTING_FLOW_ARN=$(get_out "AnyCompanyPayConnectRoutingStack${ENV_NAME:+-${ENV_NAME}}" RoutedChatFlowArn || true)
+ROUTING_CTX=()
+if [[ -n "$ROUTING_FLOW_ARN" && "$ROUTING_FLOW_ARN" != "None" ]]; then
+  echo "    routingFlowArn=$ROUTING_FLOW_ARN (routing module detected)"
+  RS="AnyCompanyPayConnectRoutingStack${ENV_NAME:+-${ENV_NAME}}"
+  ROUTING_QUEUES="$(get_out "$RS" VipChatQueueArn),$(get_out "$RS" KeyAccountChatQueueArn),$(get_out "$RS" SharedChatQueueArn)"
+  ROUTING_CTX=(-c routingFlowArn="$ROUTING_FLOW_ARN" -c routingQueueArns="$ROUTING_QUEUES")
+fi
 # --exclusively: deploy ONLY the connect stack, not its app-stack dependency.
 # The app stack is already deployed and its outputs (consumed here) are stable, so
 # there is no need to re-synth/rebuild its container image — which also avoids a
@@ -114,7 +125,7 @@ echo "    qicAssistantArn=$ASSISTANT_ARN"
   && npx cdk deploy "$CONNECT_STACK" --exclusively --require-approval never \
        -c envName="$ENV_NAME" \
        -c agenticBotAliasArn="$BOT_ALIAS_ARN" \
-       -c qicAssistantArn="$ASSISTANT_ARN" )
+       -c qicAssistantArn="$ASSISTANT_ARN" "${ROUTING_CTX[@]+"${ROUTING_CTX[@]}"}" )
 
 echo
 echo "=== Done. Inbound chat flow (anycompany-pay-chat-inbound) now routes to the agentic ==="
