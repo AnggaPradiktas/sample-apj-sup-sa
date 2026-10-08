@@ -11,6 +11,7 @@
     "attachModelInferencePolicy": true,
     "attachAwsIntegrationPolicy": true,
     "adoptExistingSpace": false,
+    "createDatasetIntegration": "",
     "retainSpaceOnDelete": true
   }
 }

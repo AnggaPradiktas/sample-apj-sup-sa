@@ -159,7 +159,7 @@ def resolve_space(client, region):
 def show_profiles(client, space_id):
     print("\nAccess profiles in this space (an alert evaluates its query as one of these):")
     for item in client.list_access_profiles(spaceId=space_id)["items"]:
-        detail = client.get_access_profile(spaceId=space_id, profileId=item["profileId"])
+        detail = client.get_access_profile(spaceId=space_id, profileId=item["profileId"])["accessProfile"]
         print(f"  {item['profileId']:<40} {item['name']:<30} assumeStatus={detail.get('assumeStatus', '?')}")
     print("  Choose one that you can assume (ALLOWED), that has an ALERT trust grant for ALL alerts,\n"
           "  and that confers StartTelemetryQuery and GetTelemetryQueryResults. Without the query\n"

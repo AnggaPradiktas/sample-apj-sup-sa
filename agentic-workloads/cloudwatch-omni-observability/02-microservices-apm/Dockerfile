@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM public.ecr.aws/docker/library/python:3.12-slim
 #checkov:skip=CKV_DOCKER_2:Health checks are service-specific in Compose; the shared loadgen image has no HTTP endpoint.
 WORKDIR /app
 COPY requirements.txt .

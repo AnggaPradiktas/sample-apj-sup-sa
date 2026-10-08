@@ -10,13 +10,13 @@ Exits non-zero if any check fails.
 
 import argparse
 import datetime
+import http.client
 import os
 import pathlib
 import re
 import subprocess  # nosec B404 - the live smoke test executes a fixed local script
 import sys
 import time
-import urllib.request
 
 import boto3
 
@@ -175,13 +175,14 @@ def live(region):
     print("\nLive: fresh traffic reaches the space")
     start = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     since = f"`@timestamp` BETWEEN to_timestamp_nanos('{start}') AND NOW()"
+    conn = http.client.HTTPConnection("localhost", 8000, timeout=10)
     try:
-        with urllib.request.urlopen(  # nosec B310 - fixed localhost HTTP smoke-test URL
-            "http://localhost:8000/orders/ORD-1001", timeout=10
-        ) as r:
-            check("shop responds (frontend :8000)", r.status == 200)
+        conn.request("GET", "/orders/ORD-1001")
+        check("shop responds (frontend :8000)", conn.getresponse().status == 200)
     except Exception as exc:
         check("shop responds (frontend :8000)", False, f"{exc}. Start it with 02-microservices-apm/up.sh")
+    finally:
+        conn.close()
     try:
         agent = subprocess.run(  # nosec B603 - fixed local script and constant argument vector
             ["./run.sh", "--sessions", "1", "--kind", "in_scope"], cwd=ROOT / "01-agent-observability",

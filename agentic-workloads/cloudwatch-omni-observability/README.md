@@ -195,5 +195,10 @@ To tear everything down, go in reverse order. With an organization domain, `sour
 3. **01:** `cd 01-agent-observability/evaluation/cdk && cdk destroy`.
 4. **00:** `cd 00-prerequisites && cdk destroy`. By default this keeps the space and its telemetry. To delete the space too, deploy once with `-c retainSpaceOnDelete=false` before destroying ([00 Destroy](00-prerequisites/README.md#destroy)).
 
-Still there afterwards, by design: the `CDKToolkit` bootstrap stack, Transaction Search (an account-wide setting) with its CloudWatch Logs resource policy, and the `aws/spans` log group holding the spans you sent. They cost nothing while idle apart from storing those spans. Remove them yourself only if nothing else in the account uses them.
+Still there afterwards, by design:
+
+* With the default `retainSpaceOnDelete=true`: the **space and its telemetry**, the **space access role**, and the **Dataset integration and its role**. The integration keeps forwarding every log group in the account into the Dataset, so the space keeps ingesting (and billing for) logs after the stack is gone. Deploy with `-c retainSpaceOnDelete=false` before destroying to remove them. If you adopted a space that already had an integration (the console path), the stack never managed that integration and neither flag removes it — delete it yourself ([00 Destroy](00-prerequisites/README.md#destroy)).
+* The `CDKToolkit` bootstrap stack, Transaction Search (an account-wide setting) with its CloudWatch Logs resource policy, and the `aws/spans` log group holding the spans you sent. They cost nothing while idle apart from storing those spans.
+
+Remove any of these yourself only once you're sure nothing else in the account uses them.
 

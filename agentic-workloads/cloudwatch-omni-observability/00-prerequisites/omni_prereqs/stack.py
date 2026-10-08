@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 from aws_cdk import (
+    Annotations,
     CfnOutput,
     CfnResource,
     CustomResource,
@@ -66,29 +67,24 @@ class OmniPrereqsStack(Stack):
 
         # 2. Dataset integration, which forwards CloudWatch logs and traces into the
         #    space's Dataset. One per account per Region. The console creates it
-        #    alongside the space; with the API it's a separate resource.
-        dataset_role = iam.Role(
-            self, "DatasetIntegrationRole",
-            description="Assumed by CloudWatch Logs to forward logs and traces into the Omni Dataset",
-            assumed_by=iam.ServicePrincipal("logs.amazonaws.com").with_conditions({
-                "StringEquals": {"aws:SourceAccount": self.account},
-                "ArnLike": {"aws:SourceArn":
-                            f"arn:{self.partition}:observabilityadmin:{self.region}:{self.account}:dataset-integration/default"},
-            }),
-            inline_policies={"forward": iam.PolicyDocument(statements=[
-                # log-group:* forwards every log group except Delivery-class ones.
-                iam.PolicyStatement(actions=["logs:IntegrateWithDataset"],
-                                    resources=[f"arn:{self.partition}:logs:{self.region}:{self.account}:log-group:*"]),
-                iam.PolicyStatement(actions=["cloudwatch:PutRecords"], resources=["*"]),
-            ])},
-        )
-        dataset_integration = CfnResource(
-            self, "DatasetIntegration",
-            type="AWS::ObservabilityAdmin::DatasetIntegration",
-            properties={"RoleArn": dataset_role.role_arn},
-        )
-        # CDK's bundled spec doesn't know this registry type yet, so synth warns
-        # "Unknown resource type". The warning is expected and harmless.
+        #    alongside the space; with the API it's a separate resource. Because the
+        #    quota is one per account per Region, creating a second one fails: when the
+        #    stack adopts a space that already has an integration (anything created in
+        #    the console), createDatasetIntegration defaults to false.
+        dataset_role = None
+        dataset_integration = None
+        if ctx["createDatasetIntegration"]:
+            dataset_role, dataset_integration = self._dataset_integration()
+            # CDK's bundled spec doesn't know this registry type yet, so synth warns
+            # "Unknown resource type". The warning is expected and harmless.
+        else:
+            # Skipping it silently would deploy green with no forwarding at all, and the
+            # only symptom is empty Dataset queries later.
+            Annotations.of(self).add_warning(
+                "Not creating a dataset integration (createDatasetIntegration=false). The space will see "
+                "no logs or traces unless this account and Region already has one. Check with: "
+                "aws observabilityadmin list-dataset-integrations. If there is none, redeploy with "
+                "-c createDatasetIntegration=true.")
 
         # 3. Transaction Search: spans land in aws/spans. Account-level, so it's off by
         #    default; turn it on only if preflight shows it disabled.
@@ -161,7 +157,13 @@ class OmniPrereqsStack(Stack):
         passable = [space_role.role_arn] + ([ctx["agentCoreEvaluationRoleArn"]] if ctx["agentCoreEvaluationRoleArn"] else [])
         on_event.add_to_role_policy(iam.PolicyStatement(actions=["iam:PassRole"], resources=passable))
 
-        provider = cr.Provider(self, "SpaceProvider", on_event_handler=on_event)
+        provider = cr.Provider(
+            self, "SpaceProvider", on_event_handler=on_event,
+            # The Provider's own framework Lambda logs too. Without a managed group it
+            # creates one with no retention that cdk destroy leaves behind.
+            log_group=logs.LogGroup(self, "SpaceProviderLogs", retention=logs.RetentionDays.ONE_WEEK,
+                                    removal_policy=RemovalPolicy.DESTROY),
+        )
         space = CustomResource(
             self, "Space",
             service_token=provider.service_token,
@@ -179,12 +181,14 @@ class OmniPrereqsStack(Stack):
             },
         )
         # Forwarding should exist before the space starts reading the Dataset.
-        space.node.add_dependency(dataset_integration)
+        if dataset_integration:
+            space.node.add_dependency(dataset_integration)
         if ctx["retainSpaceOnDelete"]:
             # A retained space still needs its role and forwarding, so keep them on stack
             # delete. RETAIN_ON_UPDATE_OR_DELETE (not RETAIN) still cleans them up when a
             # first create fails and rolls back.
-            for resource in (space_role, dataset_role, dataset_integration):
+            retained = [space_role] + ([dataset_role, dataset_integration] if dataset_integration else [])
+            for resource in retained:
                 resource.apply_removal_policy(RemovalPolicy.RETAIN_ON_UPDATE_OR_DELETE)
 
         # 5. Shared resources the samples use.
@@ -217,6 +221,29 @@ class OmniPrereqsStack(Stack):
         CfnOutput(self, "AlertsTopicArn", value=topic.topic_arn)
         CfnOutput(self, "ShopLogGroupName", value=shop_logs.log_group_name)
 
+    def _dataset_integration(self):
+        role = iam.Role(
+            self, "DatasetIntegrationRole",
+            description="Assumed by CloudWatch Logs to forward logs and traces into the Omni Dataset",
+            assumed_by=iam.ServicePrincipal("logs.amazonaws.com").with_conditions({
+                "StringEquals": {"aws:SourceAccount": self.account},
+                "ArnLike": {"aws:SourceArn":
+                            f"arn:{self.partition}:observabilityadmin:{self.region}:{self.account}:dataset-integration/default"},
+            }),
+            inline_policies={"forward": iam.PolicyDocument(statements=[
+                # log-group:* forwards every log group except Delivery-class ones.
+                iam.PolicyStatement(actions=["logs:IntegrateWithDataset"],
+                                    resources=[f"arn:{self.partition}:logs:{self.region}:{self.account}:log-group:*"]),
+                iam.PolicyStatement(actions=["cloudwatch:PutRecords"], resources=["*"]),
+            ])},
+        )
+        integration = CfnResource(
+            self, "DatasetIntegration",
+            type="AWS::ObservabilityAdmin::DatasetIntegration",
+            properties={"RoleArn": role.role_arn},
+        )
+        return role, integration
+
     def _context(self) -> dict:
         def flag(name, default):
             value = self.node.try_get_context(name)
@@ -246,6 +273,9 @@ class OmniPrereqsStack(Stack):
             "adoptExistingSpace": flag("adoptExistingSpace", False),
             "retainSpaceOnDelete": flag("retainSpaceOnDelete", True),
         }
+        # One dataset integration per account per Region. A space you adopt already has one
+        # (the console creates it with the space), so adopting skips it unless you say otherwise.
+        ctx["createDatasetIntegration"] = flag("createDatasetIntegration", not ctx["adoptExistingSpace"])
         if not ctx["domainId"]:
             raise ValueError("No Omni domain set. Add OMNI_DOMAIN_ID=<name-or-id> to ../.env, or pass "
                              "-c domainId=<name-or-id>. Find it with: aws cloudwatchomni list-domains")

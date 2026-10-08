@@ -5,7 +5,7 @@ One CDK stack, `OmniSamplesPrereqs`, sets up everything samples 01–04 need bef
 | Resource | Why |
 |---|---|
 | **Space access role** (`CloudWatchOmniSpaceAccessPolicy`, plus optional `…ModelInferencePolicy` and `…AWSIntegrationPolicy`) | Omni assumes it to operate the space. The trust policy is `cloudwatch.amazonaws.com` with `sts:AssumeRole`, `sts:TagSession`, and `sts:SetContext`, plus `aws:SourceAccount`/`aws:SourceArn` conditions |
-| **Dataset integration** + its role (`AWS::ObservabilityAdmin::DatasetIntegration`) | Forwards CloudWatch logs and traces into the space's Dataset. Without it, telemetry reaches CloudWatch but never Omni |
+| **Dataset integration** + its role (`AWS::ObservabilityAdmin::DatasetIntegration`) | Forwards CloudWatch logs and traces into the space's Dataset. Without it, telemetry reaches CloudWatch but never Omni. One per account per Region, so the stack skips it when it adopts a space that already has one (see `createDatasetIntegration`) |
 | **Omni space** (`Custom::OmniSpace`) | Where you work. CloudFormation has no Omni resource types yet, so a Lambda custom resource calls `CreateSpace` with a bundled boto3 1.43+ |
 | **Access grants**: Identity Center groups `omni-space-admins` → Space Admin, `omni-viewers` → Viewer; optional IAM role → Space Admin | People sign in with SSO through the groups (created by `enable_sso.py`). The IAM grant is for automation: managing grants, such as sample 04's alert profile, needs a grant of its own |
 | Transaction Search (`AWS::XRay::TransactionSearchConfig`) + its X-Ray→Logs resource policy, *opt-in* | Account-level setting, so it's off by default and always **retained**. Turn it on for the first deploy in an account where it's off |
@@ -39,7 +39,7 @@ It exports temporary member-account credentials, so the CLI, boto3, the CDK, and
 
 Also set `OMNI_ADMIN_PRINCIPAL_ARN` to a principal **in that member account**, such as the same `OrganizationAccountAccessRole`. Grants must name a principal in the space's own account.
 
-Quotas to know: **one domain per account**, and **one space per account per Region**. If a space already exists in the target Region, the deploy fails with a clear message. Re-run with `-c adoptExistingSpace=true` to manage that space from the stack instead.
+Quotas to know: **one domain per account**, **one space per account per Region**, and **one dataset integration per account per Region**. If a space already exists in the target Region, the deploy fails with a clear message. Re-run with `-c adoptExistingSpace=true` to manage that space from the stack instead; adopting also skips creating a dataset integration, because a space set up in the console already has one.
 
 **Use one Region for everything.** Put the space in the Region of your Omni domain **and** your IAM Identity Center instance (here `us-east-1`). Identity Center sign-in then needs no multi-Region replication. The samples, alerts, and evaluations all run in that Region.
 
@@ -113,6 +113,7 @@ Docker is **not** required: the Lambda bundle is built with a local `pip install
 | `attachAwsIntegrationPolicy` | `true` | Context graph resource discovery. It reads resource metadata across the account |
 | `enableTransactionSearch` | `false` | Set `true` only for the first deploy in an account where preflight shows it off. It takes about 10 minutes to go `PENDING`→`ACTIVE`. The setting and its logs policy are retained by the stack, so later deploys omit the flag |
 | `adoptExistingSpace` | `false` | Manage a space that already exists in the Region. Adopted spaces are never deleted by the stack |
+| `createDatasetIntegration` | `true`, or `false` when `adoptExistingSpace=true` | Observability Admin allows one dataset integration per account per Region. A space created in the console already has one, so adopting it skips creating a second (which would fail and roll the stack back). Synth warns whenever it skips. Set `true` to adopt a space that has no integration — a space created by `CreateSpace` rather than the console, or one whose integration you deleted. **Set it in `cdk.json` rather than with `-c` if you need it on every deploy**: dropping the flag on a later deploy removes the integration from the stack, which orphans it (with `retainSpaceOnDelete=true`) or deletes it and stops all forwarding (with `false`) |
 | `retainSpaceOnDelete` | `true` | Keep the space (and its telemetry) when the stack is destroyed |
 | `shopLogGroupName` | `SHOP_LOG_GROUP` from `.env`, else `/omni-samples/shop` | |
 | `alertEmail` | — | Email subscription on the alerts topic (confirm the email) |
@@ -170,6 +171,10 @@ cdk destroy
 
 The Lambda, log groups, and topic are removed. By default (`retainSpaceOnDelete=true`) the **space, its access role, and the dataset integration (and its role) are retained**, because deleting a space permanently destroys its telemetry, and a kept space still needs its role and forwarding.
 
-**Destroy/redeploy requires an extra lifecycle step.** Observability Admin allows one dataset integration per account per Region, and `adoptExistingSpace=true` adopts only the retained space—not that integration. Before redeploying after a retained destroy, either import the retained dataset integration and roles into the replacement stack, or manually remove the retained integration and let the deploy create a new one. Manual removal stops forwarding until the new deployment completes.
+A retained Dataset integration keeps forwarding every log group in the account into the Dataset, so the retained space keeps ingesting (and billing for) logs after the stack is gone.
 
-To remove everything, first deploy with `-c retainSpaceOnDelete=false`, then destroy. Only do that once you're sure you no longer need the telemetry. Verified on a fresh account: that leaves no space, Omni stacks, sample IAM roles, Dataset integration, log group, or topic behind. Transaction Search, its logs resource policy, the `aws/spans` log group, and `CDKToolkit` stay on purpose.
+**Destroy/redeploy requires an extra lifecycle step.** Observability Admin allows one dataset integration per account per Region, and `adoptExistingSpace=true` adopts only the retained space—not that integration. Redeploying with `-c adoptExistingSpace=true` therefore skips creating one (`createDatasetIntegration` defaults to `false` when adopting) and leaves the retained integration forwarding, unmanaged by the stack. To bring it back under the stack, either import the retained integration and its role into the replacement stack, or delete both the retained integration and its retained `DatasetIntegrationRole` and redeploy with `-c adoptExistingSpace=true -c createDatasetIntegration=true`. Deleting the integration stops forwarding until the new deployment completes; leaving the old role behind means an orphaned IAM role alongside the new one.
+
+To remove everything, first deploy with `-c retainSpaceOnDelete=false`, then destroy. Only do that once you're sure you no longer need the telemetry. Verified on a fresh account deployed with the defaults: that leaves no space, Omni stacks, sample IAM roles, Dataset integration, log group, or topic behind. Transaction Search, its logs resource policy, the `aws/spans` log group, and `CDKToolkit` stay on purpose.
+
+**On the adopt path, the integration is not the stack's to delete.** With `createDatasetIntegration=false` there is no integration in the template, so neither `retainSpaceOnDelete=false` nor `cdk destroy` touches the one that is forwarding. Delete it yourself when you're done: `aws observabilityadmin list-dataset-integrations`, then `delete-dataset-integration`, and remove its role.
