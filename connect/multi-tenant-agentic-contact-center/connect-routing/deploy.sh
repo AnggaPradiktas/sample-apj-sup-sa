@@ -60,18 +60,9 @@ if [[ -n "$BOT_ALIAS_ARN" && "$BOT_ALIAS_ARN" != "None" && -n "$ASSISTANT_ARN" &
 fi
 
 wire_connect_stack() { # $1 = routed flow ARN, or "" to unwire
-  local extra=()
-  if [[ -n "$1" ]]; then
-    # The routed flow + the tier chat queues (added to the existing
-    # anycompany-pay-chat routing profile so agent1/admin keep receiving chats).
-    local q
-    q="$(get_out "$ROUTING_STACK" VipChatQueueArn),$(get_out "$ROUTING_STACK" KeyAccountChatQueueArn),$(get_out "$ROUTING_STACK" SharedChatQueueArn)"
-    extra=(-c routingFlowArn="$1" -c routingQueueArns="$q")
-  fi
+  # Shared redeploy keeps every other opt-in module (agentic, screen share) as is.
   echo "==> Redeploying $CONNECT_STACK (ChatApiFn flow -> ${1:-original flows})"
-  ( cd ../infra && npm install --silent \
-    && npx cdk deploy "$CONNECT_STACK" --exclusively --require-approval never -c envName="$ENV_NAME" \
-         "${AGENTIC_CTX[@]+"${AGENTIC_CTX[@]}"}" "${extra[@]+"${extra[@]}"}" )
+  if [[ -n "$1" ]]; then ROUTING=on bash ../infra/deploy-connect-stack.sh; else ROUTING=off bash ../infra/deploy-connect-stack.sh; fi
 }
 
 if [[ "${UNWIRE:-0}" == "1" ]]; then

@@ -173,19 +173,29 @@ export class AnyCompanyPayConnectStack extends cdk.Stack {
       .map((s) => s.trim())
       .filter(Boolean);
     const routingQueuePriority = [1, 1, 2]; // vip, key-account, shared (design §6.2)
+    // OPT-IN screen-share module (connect-screenshare/): its web-call queue. When
+    // supplied, this profile also takes VOICE so its users answer merchant web
+    // calls with screen sharing. Omitted -> unchanged.
+    const screenShareQueueArn = (this.node.tryGetContext("screenShareQueueArn") as string | undefined) || "";
 
     const chatRoutingProfile = new connect.CfnRoutingProfile(this, "ChatRoutingProfile", {
       instanceArn: connectInstance.attrArn,
       name: `anycompany-pay-chat${sfx}`,
       description: "Handles AnyCompanyPay merchant chats",
       defaultOutboundQueueArn: supportQueue.attrQueueArn,
-      mediaConcurrencies: [{ channel: "CHAT", concurrency: 5 }],
+      mediaConcurrencies: [
+        { channel: "CHAT", concurrency: 5 },
+        ...(screenShareQueueArn ? [{ channel: "VOICE", concurrency: 1 }] : []),
+      ],
       queueConfigs: [
         {
           delay: 0,
           priority: 1,
           queueReference: { channel: "CHAT", queueArn: supportQueue.attrQueueArn },
         },
+        ...(screenShareQueueArn
+          ? [{ delay: 0, priority: 1, queueReference: { channel: "VOICE", queueArn: screenShareQueueArn } }]
+          : []),
         ...routingQueueArns.map((queueArn, i) => ({
           delay: 0,
           priority: routingQueuePriority[i] ?? 2,

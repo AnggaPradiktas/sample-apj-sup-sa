@@ -148,6 +148,20 @@ the tier queues. `DEMO_MODE=1 bash deploy.sh` forces the after-hours path during
 `UNWIRE=1 bash deploy.sh` switches chats back to the original flows. See
 [`connect-routing/README.md`](connect-routing/README.md).
 
+### Optional — live screen sharing
+```
+cd connect-screenshare
+bash deploy.sh                  # queue + web-call flow + video security profile + start API
+bash provision-video-agents.sh  # VideoContact.Access for the agents
+cd ../infra && npx cdk deploy AnyCompanyPayAppStack   # ship the merchant "Share screen" UI + CSP
+```
+Merchants get a **Share screen** button on their cases (web call + screen share); agents see the
+shared screen in Admin → Contact Center or the Connect agent workspace. See
+[`connect-screenshare/README.md`](connect-screenshare/README.md).
+
+Redeploying `AnyCompanyPayConnectStack` for any opt-in module goes through
+`infra/deploy-connect-stack.sh`, which keeps the other modules (agentic, routing, screen share) as they are.
+
 ### 3. Clean up and tear down everything
 
 ```
@@ -192,6 +206,10 @@ Uses the same region/env resolution as deploy. Override with `REGION=<REGION>`, 
   priority 1, ahead of new contacts. **Out of hours** the chat is acknowledged and becomes one case per
   merchant plus one **scheduled task** for the next opening, offered to backlog agents VIP → key →
   shared.
+- **Live screen sharing (opt-in, `connect-screenshare/`)** — from a case, a merchant starts a
+  **web call** (Amazon Connect in-app/web calling, `StartWebRTCContact` + the Amazon Chime SDK) and
+  **shares their screen**; the agent answers in the embedded CCP and sees it live. Tenant and case
+  ownership are enforced server-side, as for chat.
 - **Customer Profiles (B2B model)** — merchants and their users mirrored into Amazon Connect Customer
   Profiles as account + individual profiles.
 - **Infrastructure as code, modular** — two independently-deployable AWS CDK stacks (app + Connect)
@@ -271,6 +289,7 @@ routing profile, and how the tenant threads through all of it — see [§6a](#6a
 | **OpenSearch Ingestion (zero-ETL) pipeline** | `rds` source → serverless sink, Min1/Max2, attached to the Aurora VPC | Initial snapshot (Aurora→S3→index) + near-real-time CDC (WAL) with no custom ETL to maintain |
 | **Search API (`SearchApiFn`)** | HTTP API + Cognito JWT authorizer → Lambda **in the Aurora VPC** → the private collection; `GET /transactions`, `GET /transactions/{id}` | GET-only search; enforces tenant isolation by forcing `merchant_id` from the validated JWT |
 | **Routing module** (`connect-routing/`, opt-in) | CS hours (+ demo closed/open hours), tier chat queues + `ooh-followup` task queue, RP-Live / RP-OOH-Backlog, Cases fields `tier`/`ooh_task_pending`/`ooh_task_id` + OOH template, `ContactContextFn` + `OohSchedulerFn`, the routed chat flow and the OOH task flow, an SNS alert topic | A case is not routable: the flow reads the case owner and tier to set routing criteria + priority (Pattern A), and turns after-hours contacts into scheduled, prioritised tasks (Pattern B) |
+| **Screen-share module** (`connect-screenshare/`, opt-in) | Voice queue + web-call flow, `anycompany-pay-video-agent` security profile (`VideoContact.Access`), `ScreenShareApiFn` (`POST /screenshare/start`, `GET /screenshare/status/{id}`) | Native Connect web calling with customer screen sharing; the Lambda stamps the tenant from the JWT and verifies case ownership |
 | **SSM runtime-config parameter** | `/anycompany-pay/<env>/runtime-config` (Cognito + Connect + `searchApiUrl` values) | Decouples the stacks: the app reads it as a secret; the Connect and zero-ETL stacks merge their values in and force an ECS redeploy — no rebuild, no circular dependency |
 
 ---
@@ -429,6 +448,7 @@ by the tenant key `merchant_id`.
 | **Live chat** | `amazon-connect-chatjs` + `StartChatContact` via `ChatApiFn` | Merchant Support | Cognito (reused) |
 | **Customer Profiles** | `@aws-sdk/client-customer-profiles` | Agent workspace lookups; merchant tier | — (data plane) |
 | **Routing (opt-in)** | Flows + `ContactContextFn` / `OohSchedulerFn` | `connect-routing/` | — (contact attributes from `ChatApiFn`) |
+| **Web call + screen share (opt-in)** | `amazon-chime-sdk-js` + `StartWebRTCContact` via `ScreenShareApiFn` | Merchant Support → Share screen; agent CCP | Cognito (reused) |
 
 **Two sides of a chat, two SDKs, one global.** The **customer** side (merchant dashboard) uses
 **ChatJS**; the **agent** side (admin CCP) uses **Streams**. Both libraries attach to the same
@@ -496,6 +516,61 @@ Profiles (the `AccountNumber` join key), and it is enforced in the Lambdas, neve
 
 ---
 
+## 6b. Live screen sharing (opt-in)
+
+From a support case, a merchant can start a short **web call** with support and **share their screen**
+so the agent sees exactly what they see. It is built on Amazon Connect's native in-app/web calling
+(WebRTC), so the call is a normal voice contact: queued, routed, and reported like any other.
+Module: [`connect-screenshare/`](connect-screenshare/README.md).
+
+**Merchant** — on a case: **Share screen** → **Start call** (allow the microphone) → "Connecting you to a
+support agent…" → once an agent answers, **Share my screen** and pick a screen, window or tab →
+**Stop sharing** or **Hang up** at any time.
+
+**Agent** — in Admin → Contact Center (or the Connect agent workspace): **Accept call** → talk as on a
+normal call → when the merchant shares, a **Screen sharing session** view shows their screen live.
+
+```mermaid
+sequenceDiagram
+  participant M as Merchant browser
+  participant API as ScreenShareApiFn (JWT)
+  participant C as Amazon Connect
+  participant A as Agent CCP
+  M->>API: POST /screenshare/start {caseId}
+  API->>API: tenant from the JWT, case ownership check
+  API->>C: StartWebRTCContact (Customer.ScreenShare = SEND)
+  C-->>API: contactId + Chime meeting/attendee (this call only)
+  API-->>M: meeting ticket
+  M->>C: join the call with audio (Amazon Chime SDK)
+  C->>A: web-call flow -> anycompany-pay-screenshare queue -> offer
+  A->>C: Accept call
+  loop every 3 s while waiting
+    M->>API: GET /screenshare/status/{contactId}
+    API->>C: DescribeContact (agent connected?)
+  end
+  M->>C: Share my screen (Chime content share)
+  C->>A: screen sharing session (live video)
+```
+
+| Piece | Role |
+|---|---|
+| `ScreenShareApiFn` (API Gateway + Cognito JWT authorizer) | Starts the call with `StartWebRTCContact`, stamping `merchant_id` / `merchant_name` / `email` (and a verified `case_id`) from the token; reports call status |
+| Amazon Chime SDK (browser, loaded only when used) | Carries the call audio and the shared-screen video |
+| `anycompany-pay-screenshare-inbound` flow + `anycompany-pay-screenshare` queue (VOICE) | Routes the call; agent1 / admin's `anycompany-pay-chat` profile takes it when the module is wired |
+| `anycompany-pay-video-agent` security profile | `VideoContact.Access` — needed for agents to take web calls with video / screen sharing |
+| Embedded CCP flags | `allowFramedVideoCall`, `allowFramedScreenSharing`, `allowFramedScreenSharingPopUp` in Admin → Contact Center |
+
+**"Connected" comes from Connect, not the meeting.** Connect places its own media participant in the
+call before any agent answers, so the merchant UI asks the backend (`DescribeContact` →
+agent connected) instead of trusting meeting presence; only then does **Share my screen** appear.
+
+**Isolation.** Only the `merchant` group can start a session; the tenant always comes from the
+validated JWT; a case of another tenant → 403; another tenant's call status → 404; the meeting ticket
+is valid only for that one call; nothing is shared until the merchant picks what to share, and sharing
+stops when they stop or hang up.
+
+---
+
 ## 7. Customer Profiles (B2B account model)
 
 Merchants are mirrored into Amazon Connect Customer Profiles (`infra/provision-customer-profiles.sh`)
@@ -537,8 +612,9 @@ The practices this project deliberately follows (and why):
   credentials and the API has no CORS); `ChatApiFn` does, stamping the tenant from the JWT and
   returning only a per-contact `ParticipantToken`.
 - **Content Security Policy + XSS-safe rendering.** nginx sends a CSP scoped to Cognito, the API, and
-  the Connect participant `wss`/CCP origins (per AWS's chat security guidance); chat messages are
-  rendered as React text nodes (never `innerHTML`).
+  the Connect participant `wss`/CCP origins (per AWS's chat security guidance), plus `*.chime.aws` and
+  `worker-src blob:` for the screen-share web call's media; chat messages are rendered as React text
+  nodes (never `innerHTML`).
 - **ChatJS/Streams isolation.** The customer chat (ChatJS) and agent CCP (Streams) libraries are kept
   off each other's pages via lazy/dynamic imports, avoiding the shared-`window.connect` conflict.
 - **No secrets in the template.** Connect users are created by a custom resource that reads a
@@ -565,6 +641,10 @@ The practices this project deliberately follows (and why):
   start](#2-one-time-connect-setup-agentic-self-service-only). Deeper hardening (AgentCore Identity
   for signed per-merchant tokens, AgentCore Policy) is documented as additive upgrades in
   [`connect-ai-agent/README.md`](connect-ai-agent/README.md).
+- **Screen sharing scope.** Merchant → agent only (no agent screen share), started from a case, not
+  recorded. The screen-share queue is always open (it does not follow the chat business hours). The
+  standalone `ccp-v2` page has no screen-share view — agents use Admin → Contact Center or the Connect
+  agent workspace.
 - **Routing module scope.** Chat + task channels only (no SES email identity on the instance, so the
   design's email cases don't apply); Cases rules / SLA alerts and quick-connect transfer flows are not
   built. Owner routing needs the owner to have the tier queue in their routing profile (both new
