@@ -58,7 +58,7 @@ def main():
     try:
         while True:
             for _ in range(args.sessions):
-                run_session(random.choice(conversations))
+                run_session(random.choice(conversations))  # nosec B311 - selects synthetic demo input
                 time.sleep(args.sleep)
             if not args.loop:
                 break

@@ -46,8 +46,8 @@ async def apply_chaos(operation: str):
         span.set_attribute("chaos.latency_ms", CHAOS["latency_ms"])
         # Simulate a slow card processor: a child span makes the time visible on the trace.
         with tracer.start_as_current_span("card_processor.authorize"):
-            await asyncio.sleep(CHAOS["latency_ms"] / 1000 * random.uniform(0.8, 1.2))
-    if random.random() < CHAOS["error_rate"]:
+            await asyncio.sleep(CHAOS["latency_ms"] / 1000 * random.uniform(0.8, 1.2))  # nosec B311 - chaos jitter
+    if random.random() < CHAOS["error_rate"]:  # nosec B311 - intentional fault simulation
         span.set_attribute("chaos.injected_error", True)
         log.error("card processor unavailable during %s", operation)
         raise HTTPException(status_code=503, detail="card processor unavailable")
@@ -78,6 +78,9 @@ async def payment_status(order_id: str):
 async def refund(order_id: str):
     await apply_chaos("refund")
     payment = PAYMENTS.get(order_id)
+    if payment and payment["state"] == "refund_pending":
+        log.info("refund already pending for %s", order_id)
+        return {"order_id": order_id, "state": payment["state"]}
     if not payment or payment["state"] != "captured":
         raise HTTPException(status_code=409, detail="nothing to refund")
     payment["state"] = "refund_pending"

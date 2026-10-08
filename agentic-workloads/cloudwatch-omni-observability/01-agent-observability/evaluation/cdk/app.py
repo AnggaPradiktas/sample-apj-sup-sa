@@ -7,6 +7,7 @@ hand-written IAM policy is needed. Settings come from the repo's .env, like step
 
 import json
 import os
+import sys
 from pathlib import Path
 
 import aws_cdk as cdk
@@ -14,18 +15,9 @@ from aws_cdk import aws_bedrockagentcore as agentcore
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
+sys.path.insert(0, str(ROOT))
 
-
-def load_env(path: Path) -> None:
-    if path.exists():
-        for line in path.read_text().splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                key, value = line.split("=", 1)
-                # .env wins over the shell, like the bash scripts that source it, so a stray
-                # AWS_REGION in your profile can't send one step to a different Region.
-                if value.strip():
-                    os.environ[key.strip()] = value.strip()
+from common.env_file import load_env
 
 
 class AgentEvaluationStack(cdk.Stack):

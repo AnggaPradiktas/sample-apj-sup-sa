@@ -13,6 +13,11 @@ SESSIONS="${1:-15}"
 CHAOS="$ROOT/02-microservices-apm/chaos.sh"
 AGENT="$ROOT/01-agent-observability/run.sh"
 
+cleanup() {
+  "$CHAOS" off >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
 curl -fsS http://localhost:8001/healthz >/dev/null \
   || { echo "orders is not reachable on :8001. Start sample 02 first (02-microservices-apm/up.sh)."; exit 1; }
 
@@ -32,6 +37,7 @@ phase baseline
 phase incident
 
 "$CHAOS" off >/dev/null
+trap - EXIT
 phase recovery
 
 echo

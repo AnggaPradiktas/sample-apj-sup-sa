@@ -143,9 +143,12 @@ class OmniPrereqsStack(Stack):
                 "cloudwatch:ListDomains", "cloudwatch:GetDomain", "cloudwatch:GetDomainForOrganization",
                 "cloudwatch:ListSpaces", "cloudwatch:GetSpace", "cloudwatch:CreateSpace",
                 "cloudwatch:UpdateSpace", "cloudwatch:DeleteSpace", "cloudwatch:TagResource",
-                "cloudwatch:ListAccessGrants", "cloudwatch:CreateAccessGrant",
+                "cloudwatch:ListAccessGrants", "cloudwatch:CreateAccessGrant", "cloudwatch:DeleteAccessGrant",
             ],
             resources=["*"],  # space and grant ARNs don't exist until creation
+        ))
+        on_event.add_to_role_policy(iam.PolicyStatement(
+            actions=["cloudformation:DescribeStacks"], resources=[self.stack_id],
         ))
         # With an Identity Center domain, CreateSpace checks (as the caller) that Identity Center
         # is available in the space's Region (sso:ListRegions), and IDC group grants are resolved

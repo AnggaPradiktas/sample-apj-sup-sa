@@ -1,12 +1,13 @@
 """Bundle the space handler with a current boto3, without Docker.
 
 The Lambda runtime's built-in boto3 has no cloudwatchomni client yet, so the
-handler ships its own copy. Bundling runs `pip install` on the host, and falls
-back to the Docker bundling image only if local bundling fails.
+handler ships a hash-verified dependency lock. Bundling runs `pip install` on
+the host, and falls back to the Docker bundling image only if local bundling
+fails.
 """
 
 import shutil
-import subprocess
+import subprocess  # nosec B404 - bundling executes a fixed pip argument vector without a shell
 import sys
 from pathlib import Path
 
@@ -14,7 +15,7 @@ import jsii
 from aws_cdk import BundlingOptions, DockerImage, ILocalBundling
 from aws_cdk import aws_lambda as lambda_
 
-BOTO3_SPEC = "boto3>=1.43"
+BUNDLE_REQUIREMENTS = "requirements-bundle.txt"
 
 
 @jsii.implements(ILocalBundling)
@@ -24,10 +25,11 @@ class LocalPipBundling:
 
     def try_bundle(self, output_dir: str, *, image=None, **_kwargs) -> bool:
         try:
-            subprocess.run(
+            subprocess.run(  # nosec B603 - arguments are fixed; only CDK's output path varies
                 [sys.executable, "-m", "pip", "install", "--quiet", "--no-compile",
-                 "--platform", "manylinux2014_aarch64", "--only-binary=:all:",
-                 "--python-version", "3.13", "--target", output_dir, BOTO3_SPEC],
+                 "--require-hashes", "--platform", "manylinux2014_aarch64", "--only-binary=:all:",
+                 "--python-version", "3.13", "--target", output_dir,
+                 "--requirement", str(self._source / BUNDLE_REQUIREMENTS)],
                 check=True,
             )
             for item in self._source.iterdir():
@@ -44,7 +46,11 @@ def handler_code(source: Path) -> lambda_.Code:
         str(source),
         bundling=BundlingOptions(
             image=DockerImage.from_registry("public.ecr.aws/sam/build-python3.13"),
-            command=["bash", "-c", f"pip install '{BOTO3_SPEC}' -t /asset-output && cp -r . /asset-output"],
+            command=[
+                "bash", "-c",
+                "pip install --require-hashes --only-binary=:all: "
+                f"-r /asset-input/{BUNDLE_REQUIREMENTS} -t /asset-output && cp -r . /asset-output",
+            ],
             local=LocalPipBundling(source),
         ),
     )

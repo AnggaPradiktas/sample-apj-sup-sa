@@ -29,22 +29,14 @@ import boto3
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 ENV = ROOT / ".env"
+sys.path.insert(0, str(ROOT))
+
+from common.env_file import load_env
+
 GROUPS = {
     "OMNI_ADMIN_GROUP_ID": ("omni-space-admins", "CloudWatch Omni: Space Admins. Keep this group small."),
     "OMNI_VIEWER_GROUP_ID": ("omni-viewers", "CloudWatch Omni: read-only Viewers."),
 }
-
-
-def load_env():
-    if ENV.exists():
-        for line in ENV.read_text().splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                key, value = line.split("=", 1)
-                # .env wins over the shell, like the bash scripts that source it, so a stray
-                # AWS_REGION in your profile can't send one step to a different Region.
-                if value.strip():
-                    os.environ[key.strip()] = value.strip()
 
 
 def set_env(key, value):
@@ -57,19 +49,36 @@ def set_env(key, value):
 
 
 def management_session():
-    # common/assume-member-role.sh keeps the caller's own credentials as OMNI_BASE_*.
-    # Use them if present, so this works in a shell that already switched to the member account.
-    if os.environ.get("OMNI_BASE_AWS_ACCESS_KEY_ID"):
-        return boto3.Session(
-            aws_access_key_id=os.environ["OMNI_BASE_AWS_ACCESS_KEY_ID"],
-            aws_secret_access_key=os.environ["OMNI_BASE_AWS_SECRET_ACCESS_KEY"],
-            aws_session_token=os.environ.get("OMNI_BASE_AWS_SESSION_TOKEN") or None,
+    """Return the management session without inheriting member credentials."""
+    source = os.environ.get("OMNI_BASE_AWS_SOURCE")
+    if source == "profile":
+        return boto3.Session(profile_name=os.environ["OMNI_BASE_AWS_PROFILE"])
+    if source == "default-chain":
+        member = {key: os.environ.pop(key, None) for key in
+                  ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE")}
+        try:
+            base = boto3.Session()
+            credentials = base.get_credentials()
+            if credentials is None:
+                raise RuntimeError("The default AWS credential chain returned no management credentials")
+            frozen = credentials.get_frozen_credentials()
+            return boto3.Session(
+                aws_access_key_id=frozen.access_key,
+                aws_secret_access_key=frozen.secret_key,
+                aws_session_token=frozen.token,
+            )
+        finally:
+            os.environ.update({key: value for key, value in member.items() if value is not None})
+    if source == "environment":
+        raise RuntimeError(
+            "Base environment credentials are intentionally not exported to child processes. "
+            "Run enable_sso.py before assume-member-role.sh, or use a named management AWS_PROFILE."
         )
     return boto3.Session()
 
 
 def main():
-    load_env()
+    load_env(ENV)
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--apply", action="store_true")
     p.add_argument("--admin-user", action="append", default=[], help="Identity Center user name to add to omni-space-admins")

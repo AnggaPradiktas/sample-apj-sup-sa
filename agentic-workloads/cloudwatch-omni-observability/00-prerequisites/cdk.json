@@ -5,7 +5,7 @@
     "spaceName": "omni-samples",
     "adminPrincipalArn": "",
     "agentCoreEvaluationRoleArn": "",
-    "shopLogGroupName": "/omni-samples/shop",
+    "shopLogGroupName": "",
     "alertEmail": "",
     "enableTransactionSearch": false,
     "attachModelInferencePolicy": true,

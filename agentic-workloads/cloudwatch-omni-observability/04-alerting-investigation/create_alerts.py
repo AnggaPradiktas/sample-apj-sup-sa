@@ -178,7 +178,7 @@ def notification_rules(args, states):
 
 
 def main():
-    load_env()
+    load_env(ROOT / ".env")
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--profile-id")
     p.add_argument("--sns-topic-arn", default=os.environ.get("ALERTS_TOPIC_ARN"),

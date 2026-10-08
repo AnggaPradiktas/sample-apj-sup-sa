@@ -1,4 +1,5 @@
 FROM python:3.12-slim
+#checkov:skip=CKV_DOCKER_2:Health checks are service-specific in Compose; the shared loadgen image has no HTTP endpoint.
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt \

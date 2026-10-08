@@ -12,7 +12,8 @@ import argparse
 import datetime
 import os
 import pathlib
-import subprocess
+import re
+import subprocess  # nosec B404 - the live smoke test executes a fixed local script
 import sys
 import time
 import urllib.request
@@ -42,7 +43,7 @@ def window(minutes):
 
 
 def main():
-    load_env()
+    load_env(ROOT / ".env")
     p = argparse.ArgumentParser()
     p.add_argument("--live", action="store_true", help="send fresh traffic and wait for it to appear")
     p.add_argument("--recent-minutes", type=int, default=180, help="how far back 'recent data' checks look")
@@ -89,43 +90,60 @@ def main():
     check("no per-person IAM user grants (people use groups)", not people_iam, f"{len(people_iam)} found")
 
     print("\nSample 02: microservices")
-    rows = scalar(f"""
-        SELECT resource['attributes']['service.name'] AS service, COUNT(*) AS n, COUNT(DISTINCT spanId) AS d
-        FROM traces.default WHERE {recent} AND resource['attributes']['service.namespace'] = 'shop'
-        GROUP BY resource['attributes']['service.name']""", "n")
+    rows = scalar(
+        f"SELECT resource['attributes']['service.name'] AS service, COUNT(*) AS n, "  # nosec B608 - typed time window
+        f"COUNT(DISTINCT spanId) AS d FROM traces.default WHERE {recent} "
+        "AND resource['attributes']['service.namespace'] = 'shop' "
+        "GROUP BY resource['attributes']['service.name']",
+        "n",
+    )
     by = {r["service"]: (int(r["n"]), int(r["d"])) for r in rows}
     for svc in ("frontend", "orders", "payments"):
         check(f"spans from {svc}", by.get(svc, (0, 0))[0] > 0, f"{by.get(svc, (0, 0))[0]} spans")
     dup = {s: n - d for s, (n, d) in by.items() if n != d}
     check("no duplicate span records (FastAPI auto_configure off)", not dup, str(dup) if dup else "")
-    rows = scalar(f"""SELECT COUNT(*) AS n FROM logs.default WHERE {recent}
-                      AND `@logGroupName` = '{os.environ.get('SHOP_LOG_GROUP', '/omni-samples/shop')}'""", "n")
+    shop_log_group = os.environ.get("SHOP_LOG_GROUP", "/omni-samples/shop")
+    if not re.fullmatch(r"[.\-_/#A-Za-z0-9]+", shop_log_group):
+        sys.exit("SHOP_LOG_GROUP contains characters that AWS log-group names do not allow")
+    rows = scalar(
+        f"SELECT COUNT(*) AS n FROM logs.default WHERE {recent} "  # nosec B608 - validated AWS log-group naming
+        f"AND `@logGroupName` = '{shop_log_group}'",
+        "n",
+    )
     check("shop logs forwarded", rows and int(rows[0]["n"]) > 0, f"{rows[0]['n'] if rows else 0} records")
 
     print("\nSample 01: AI agent")
-    rows = scalar(f"""SELECT COUNT(*) AS n FROM traces.default WHERE {recent}
-                      AND resource['attributes']['service.name'] = 'support-agent'
-                      AND attributes['gen_ai.operation.name'] = 'invoke_agent'""", "n")
+    rows = scalar(
+        f"SELECT COUNT(*) AS n FROM traces.default WHERE {recent} "  # nosec B608 - typed time window
+        "AND resource['attributes']['service.name'] = 'support-agent' "
+        "AND attributes['gen_ai.operation.name'] = 'invoke_agent'",
+        "n",
+    )
     check("agent turns traced", rows and int(rows[0]["n"]) > 0, f"{rows[0]['n'] if rows else 0} turns")
     ac = boto3.client("bedrock-agentcore-control", region_name=region)
     cfgs = ac.list_online_evaluation_configs()["onlineEvaluationConfigs"]
     check("online evaluation ENABLED", any(c.get("executionStatus") == "ENABLED" for c in cfgs),
           ", ".join(f"{c['onlineEvaluationConfigName']}={c.get('executionStatus')}" for c in cfgs))
-    rows = scalar(f"""SELECT attributes['gen_ai.evaluation.name'] AS e, COUNT(*) AS n FROM "logs.default"
-                      WHERE {window(max(args.recent_minutes, 360))} AND attributes['gen_ai.evaluation.name'] IS NOT NULL
-                      AND attributes['error.type'] IS NULL
-                      AND resource['attributes']['service.name'] IN ('support-agent', 'support-agent.DEFAULT')
-                      GROUP BY attributes['gen_ai.evaluation.name']""", "n")
+    rows = scalar(
+        f"SELECT attributes['gen_ai.evaluation.name'] AS e, COUNT(*) AS n FROM \"logs.default\" "  # nosec B608 - typed time window
+        f"WHERE {window(max(args.recent_minutes, 360))} AND attributes['gen_ai.evaluation.name'] IS NOT NULL "
+        "AND attributes['error.type'] IS NULL "
+        "AND resource['attributes']['service.name'] IN ('support-agent', 'support-agent.DEFAULT') "
+        "GROUP BY attributes['gen_ai.evaluation.name']",
+        "n",
+    )
     scores = {r["e"]: int(r["n"]) for r in rows}
     for evaluator in ("Builtin.Helpfulness", "ScopeAdherence"):
         check(f"evaluation scores: {evaluator}", scores.get(evaluator, 0) > 0, f"{scores.get(evaluator, 0)} scored")
 
     print("\nSample 03: agent + app correlation")
-    rows = scalar(f"""
-        SELECT COUNT(DISTINCT traceId) AS n FROM traces.default
-        WHERE {recent} AND resource['attributes']['service.name'] = 'payments'
-          AND traceId IN (SELECT DISTINCT traceId FROM traces.default WHERE {recent}
-                          AND resource['attributes']['service.name'] = 'support-agent')""", "n")
+    rows = scalar(
+        f"SELECT COUNT(DISTINCT traceId) AS n FROM traces.default WHERE {recent} "  # nosec B608 - typed time window
+        "AND resource['attributes']['service.name'] = 'payments' "
+        f"AND traceId IN (SELECT DISTINCT traceId FROM traces.default WHERE {recent} "
+        "AND resource['attributes']['service.name'] = 'support-agent')",
+        "n",
+    )
     check("agent traces continue into payments", rows and int(rows[0]["n"]) > 0, f"{rows[0]['n'] if rows else 0} traces")
 
     print("\nSample 04: alerts")
@@ -158,18 +176,31 @@ def live(region):
     start = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     since = f"`@timestamp` BETWEEN to_timestamp_nanos('{start}') AND NOW()"
     try:
-        with urllib.request.urlopen("http://localhost:8000/orders/ORD-1001", timeout=10) as r:
+        with urllib.request.urlopen(  # nosec B310 - fixed localhost HTTP smoke-test URL
+            "http://localhost:8000/orders/ORD-1001", timeout=10
+        ) as r:
             check("shop responds (frontend :8000)", r.status == 200)
     except Exception as exc:
         check("shop responds (frontend :8000)", False, f"{exc}. Start it with 02-microservices-apm/up.sh")
-    agent = subprocess.run(["./run.sh", "--sessions", "1", "--kind", "in_scope"], cwd=ROOT / "01-agent-observability",
-                           capture_output=True, text=True, timeout=300)
-    check("agent turn runs", agent.returncode == 0 and "agent error" not in agent.stdout, f"exit {agent.returncode}")
-    ok, secs = poll(f"""SELECT COUNT(*) AS n FROM traces.default WHERE {since}
-                        AND resource['attributes']['service.name'] = 'frontend'""")
+    try:
+        agent = subprocess.run(  # nosec B603 - fixed local script and constant argument vector
+            ["./run.sh", "--sessions", "1", "--kind", "in_scope"], cwd=ROOT / "01-agent-observability",
+            capture_output=True, text=True, timeout=300,
+        )
+    except subprocess.TimeoutExpired:
+        check("agent turn runs", False, "timed out after 300s")
+    else:
+        check("agent turn runs", agent.returncode == 0 and "agent error" not in agent.stdout,
+              f"exit {agent.returncode}")
+    ok, secs = poll(
+        f"SELECT COUNT(*) AS n FROM traces.default WHERE {since} "  # nosec B608 - generated UTC timestamp
+        "AND resource['attributes']['service.name'] = 'frontend'"
+    )
     check("new shop spans queryable", ok, f"after ~{secs}s")
-    ok, secs = poll(f"""SELECT COUNT(*) AS n FROM traces.default WHERE {since}
-                        AND resource['attributes']['service.name'] = 'support-agent'""")
+    ok, secs = poll(
+        f"SELECT COUNT(*) AS n FROM traces.default WHERE {since} "  # nosec B608 - generated UTC timestamp
+        "AND resource['attributes']['service.name'] = 'support-agent'"
+    )
     check("new agent spans queryable", ok, f"after ~{secs}s")
 
 

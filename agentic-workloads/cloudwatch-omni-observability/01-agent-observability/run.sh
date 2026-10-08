@@ -6,7 +6,10 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
-if [ -f "$ROOT/.env" ]; then set -a; . "$ROOT/.env"; set +a
+if [ -f "$ROOT/.env" ]; then
+  . "$ROOT/common/load-env.sh"
+  omni_load_env "$ROOT/.env"
+  unset -f omni_load_env
 else echo "No $ROOT/.env. Create it first: cp $ROOT/.env.example $ROOT/.env (then edit)"; exit 1; fi
 : "${AWS_REGION:?set AWS_REGION in .env}" "${MODEL_ID:?set MODEL_ID in .env}"
 

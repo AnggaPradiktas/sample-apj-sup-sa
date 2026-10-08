@@ -29,13 +29,13 @@ aws xray get-trace-segment-destination --region $AWS_REGION   # CloudWatchLogs/A
 | **Organization domain** (`aws cloudwatchomni list-domains` shows an `organization-domain/` ARN) | A **member account** of that organization. The management account that owns the domain **cannot create a space**. `CreateSpace` fails with `The organization management account cannot create a space.` |
 | **Account domain** (`domain/` ARN) | The account that owns the domain |
 
-`common/preflight.sh` warns when your credentials are for the management account. To act in a member account, set `OMNI_MEMBER_ROLE_ARN` in `.env` (for example `arn:aws:iam::<member-acct>:role/OrganizationAccountAccessRole`) and source the helper **in every new shell**, before `cdk` or any sample:
+`common/preflight.sh` warns when your credentials are for the management account. To act in a member account, set `OMNI_MEMBER_ROLE_ARN` in `.env` (for example `arn:aws:iam::<member-acct>:role/OrganizationAccountAccessRole`) and source the helper before `cdk` or any sample:
 
 ```bash
 source common/assume-member-role.sh      # run from the repo root; credentials last ~1 hour, re-source to refresh
 ```
 
-It exports temporary member-account credentials, so the CLI, boto3, the CDK, and `docker compose` all act in that account. A named `AWS_PROFILE` is **not** enough when your shell already has `AWS_ACCESS_KEY_ID` set (SSO or credential helpers): the SDKs prefer those variables and silently stay in the management account.
+It exports temporary member-account credentials, so the CLI, boto3, the CDK, and `docker compose` all act in that account. A named `AWS_PROFILE` is **not** enough when your shell already has `AWS_ACCESS_KEY_ID` set (SSO or credential helpers): the SDKs prefer those variables and silently stay in the management account. When the base credentials came from environment variables, refresh in the original shell; a nested child shell intentionally does not inherit the saved management-account secret keys. Prefer a named management profile when every new shell must switch accounts independently.
 
 Also set `OMNI_ADMIN_PRINCIPAL_ARN` to a principal **in that member account**, such as the same `OrganizationAccountAccessRole`. Grants must name a principal in the space's own account.
 
@@ -45,7 +45,7 @@ Quotas to know: **one domain per account**, and **one space per account per Regi
 
 ## Step A: SSO sign-in (management account, once)
 
-People should reach Omni through IAM Identity Center rather than by switching into the member account. `enable_sso.py` adds Identity Center sign-in to the organization domain (IAM sign-in stays on for automation and break-glass). It creates two least-privilege groups and writes their IDs into `.env`. Run it with **management-account** credentials. In a shell that already sourced `assume-member-role.sh`, it uses the saved management credentials automatically.
+People should reach Omni through IAM Identity Center rather than by switching into the member account. `enable_sso.py` adds Identity Center sign-in to the organization domain (IAM sign-in stays on for automation and break-glass). It creates two least-privilege groups and writes their IDs into `.env`. Run it with **management-account** credentials. In a shell that already sourced `assume-member-role.sh`, it recovers the management session automatically when the base source was a named profile or the default credential chain. If the base credentials were explicit environment variables, run `enable_sso.py` before switching or from a separate management-account shell; those secret keys are intentionally not exported to child processes.
 
 ```bash
 cd 00-prerequisites
@@ -169,5 +169,7 @@ cdk destroy
 ```
 
 The Lambda, log groups, and topic are removed. By default (`retainSpaceOnDelete=true`) the **space, its access role, and the dataset integration (and its role) are retained**, because deleting a space permanently destroys its telemetry, and a kept space still needs its role and forwarding.
+
+**Destroy/redeploy requires an extra lifecycle step.** Observability Admin allows one dataset integration per account per Region, and `adoptExistingSpace=true` adopts only the retained space—not that integration. Before redeploying after a retained destroy, either import the retained dataset integration and roles into the replacement stack, or manually remove the retained integration and let the deploy create a new one. Manual removal stops forwarding until the new deployment completes.
 
 To remove everything, first deploy with `-c retainSpaceOnDelete=false`, then destroy. Only do that once you're sure you no longer need the telemetry. Verified on a fresh account: that leaves no space, Omni stacks, sample IAM roles, Dataset integration, log group, or topic behind. Transaction Search, its logs resource policy, the `aws/spans` log group, and `CDKToolkit` stay on purpose.

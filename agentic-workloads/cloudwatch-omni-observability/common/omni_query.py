@@ -19,20 +19,9 @@ import time
 import boto3
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 
-
-def load_env():
-    env_file = ROOT / ".env"
-    if not env_file.exists():
-        return
-    for line in env_file.read_text().splitlines():
-        line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            key, value = line.split("=", 1)
-            # .env wins over the shell, like the bash scripts that source it, so a stray
-            # AWS_REGION in your profile can't send one step to a different Region.
-            if value.strip():
-                os.environ[key.strip()] = value.strip()
+from common.env_file import load_env
 
 
 def read_query(path, variables):
@@ -46,15 +35,18 @@ def read_query(path, variables):
     return sql
 
 
-def run(sql, max_rows):
+def run(sql, max_rows, timeout_s=300):
     client = boto3.client("cloudwatchomni", region_name=os.environ["AWS_REGION"])
     session_id = client.start_telemetry_query_session(sessionName="omni-samples")["sessionId"]
+    deadline = time.monotonic() + timeout_s
     try:
         query_id = client.start_telemetry_query(queryString=sql, sessionId=session_id)["queryId"]
         while True:
             result = client.get_telemetry_query_results(queryId=query_id, maxResults=max_rows)
             if result["status"] != "Running":
                 break
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"Query timed out after {timeout_s}s")
             time.sleep(1)
         if result["status"] != "Complete":
             sys.exit(f"Query {result['status']}")
@@ -76,7 +68,7 @@ def print_rows(rows):
 
 
 def main():
-    load_env()
+    load_env(ROOT / ".env")
     parser = argparse.ArgumentParser()
     parser.add_argument("sql_file")
     parser.add_argument("--var", action="append", default=[], help="placeholder value, key=value")

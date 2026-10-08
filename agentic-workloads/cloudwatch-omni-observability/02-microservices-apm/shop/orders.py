@@ -39,23 +39,30 @@ class ReturnRequest(BaseModel):
     reason: str
 
 
-async def payments(method: str, path: str, **kwargs):
-    """Call payments and turn its failures into a 502 from orders."""
+async def payments(method: str, path: str, *, propagate_conflict: bool = False,
+                   allow_not_found: bool = False, **kwargs):
+    """Call payments and turn unexpected responses into an orders API error."""
     try:
         response = await http.request(method, path, **kwargs)
     except httpx.TimeoutException:
         log.error("payments timed out on %s %s", method, path)
         raise HTTPException(status_code=504, detail="payments timed out")
+    if response.is_success or (response.status_code == 404 and allow_not_found):
+        return response
+    if response.status_code == 409 and propagate_conflict:
+        log.info("payments rejected %s %s with a conflict", method, path)
+        raise HTTPException(status_code=409, detail=response.json().get("detail", "refund could not be started"))
     if response.status_code >= 500:
         log.error("payments failed on %s %s: %s", method, path, response.status_code)
         raise HTTPException(status_code=502, detail="payments unavailable")
-    return response
+    log.error("payments rejected %s %s: %s", method, path, response.status_code)
+    raise HTTPException(status_code=502, detail="payments returned an unexpected response")
 
 
 @app.post("/orders", status_code=201)
 async def create_order(body: NewOrder):
     order_id = f"ORD-{uuid.uuid4().hex[:6].upper()}"
-    total = round(sum(random.uniform(5, 80) for _ in body.items), 2)
+    total = round(sum(random.uniform(5, 80) for _ in body.items), 2)  # nosec B311 - synthetic prices
     span = trace.get_current_span()
     span.set_attribute("order.id", order_id)
     span.set_attribute("order.items", len(body.items))
@@ -72,7 +79,7 @@ async def get_order(order_id: str):
     order = ORDERS.get(order_id)
     if not order:
         raise HTTPException(status_code=404, detail=f"Order {order_id} not found")
-    payment = await payments("GET", f"/payments/{order_id}")
+    payment = await payments("GET", f"/payments/{order_id}", allow_not_found=True)
     payment_state = payment.json().get("state") if payment.status_code == 200 else "unknown"
     return {"order_id": order_id, **order, "payment": payment_state}
 
@@ -84,7 +91,7 @@ async def start_return(order_id: str, body: ReturnRequest):
         raise HTTPException(status_code=404, detail=f"Order {order_id} not found")
     if order["status"] != "delivered":
         return {"order_id": order_id, "accepted": False, "detail": "Only delivered orders can be returned"}
-    await payments("POST", f"/refunds/{order_id}")
+    await payments("POST", f"/refunds/{order_id}", propagate_conflict=True)
     log.info("return accepted for %s: %s", order_id, body.reason)
     return {"order_id": order_id, "accepted": True, "return_label": f"RMA-{order_id[-4:]}"}
 

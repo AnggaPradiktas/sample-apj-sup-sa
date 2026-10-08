@@ -14,6 +14,13 @@ x-otel-env: &otel-env
   # Drop the per-request ASGI "http send/receive" internal spans.
   OTEL_PYTHON_FASTAPI_EXCLUDE_SPANS: "receive,send"
 
+x-http-healthcheck: &http-healthcheck
+  test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=2)"]
+  interval: 10s
+  timeout: 3s
+  retries: 5
+  start_period: 10s
+
 services:
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.162.0
@@ -41,7 +48,12 @@ services:
       OTEL_RESOURCE_ATTRIBUTES: service.namespace=shop,deployment.environment.name=demo
       ORDERS_URL: http://orders:8000
     ports: ["127.0.0.1:8000:8000"]
-    depends_on: [otel-collector, orders]
+    healthcheck: *http-healthcheck
+    depends_on:
+      otel-collector:
+        condition: service_started
+      orders:
+        condition: service_healthy
 
   orders:
     build: .
@@ -52,7 +64,12 @@ services:
       OTEL_RESOURCE_ATTRIBUTES: service.namespace=shop,deployment.environment.name=demo
       PAYMENTS_URL: http://payments:8000
     ports: ["127.0.0.1:8001:8000"]
-    depends_on: [otel-collector, payments]
+    healthcheck: *http-healthcheck
+    depends_on:
+      otel-collector:
+        condition: service_started
+      payments:
+        condition: service_healthy
 
   payments:
     build: .
@@ -62,7 +79,10 @@ services:
       OTEL_SERVICE_NAME: payments
       OTEL_RESOURCE_ATTRIBUTES: service.namespace=shop,deployment.environment.name=demo
     ports: ["127.0.0.1:8002:8000"]
-    depends_on: [otel-collector]
+    healthcheck: *http-healthcheck
+    depends_on:
+      otel-collector:
+        condition: service_started
 
   loadgen:
     build: .
@@ -70,4 +90,6 @@ services:
     environment:
       FRONTEND_URL: http://frontend:8000
       RPS: ${RPS:-2}
-    depends_on: [frontend]
+    depends_on:
+      frontend:
+        condition: service_healthy

@@ -16,11 +16,11 @@ def main():
     with httpx.Client(base_url=FRONTEND_URL, timeout=15) as client:
         while True:
             try:
-                if random.random() < 0.8:
-                    items = random.sample(CATALOG, k=random.randint(1, 3))
+                if random.random() < 0.8:  # nosec B311 - controls synthetic traffic mix
+                    items = random.sample(CATALOG, k=random.randint(1, 3))  # nosec B311 - synthetic catalog data
                     r = client.post("/checkout", json={"items": items})
                 else:
-                    r = client.get(f"/orders/{random.choice(KNOWN_ORDERS)}")
+                    r = client.get(f"/orders/{random.choice(KNOWN_ORDERS)}")  # nosec B311 - synthetic lookup
                 print(r.request.method, r.request.url.path, r.status_code, flush=True)
             except httpx.HTTPError as exc:
                 print("request failed:", exc, flush=True)

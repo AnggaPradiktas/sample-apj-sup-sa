@@ -53,7 +53,7 @@ def grants(client, space_id, **filters):
 
 
 def main():
-    load_env()
+    load_env(ROOT / ".env")
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()

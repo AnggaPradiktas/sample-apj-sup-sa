@@ -3,7 +3,9 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"; ROOT="$(cd "$HERE/.." && pwd)"; ENV="$ROOT/.env"
 [ -f "$ENV" ] || cp "$ROOT/.env.example" "$ENV"
-set -a; . "$ENV"; set +a
+. "$ROOT/common/load-env.sh"
+omni_load_env "$ENV"
+unset -f omni_load_env
 out() {
   local value
   value=$(aws cloudformation describe-stacks --stack-name OmniSamplesPrereqs --region "$AWS_REGION" \

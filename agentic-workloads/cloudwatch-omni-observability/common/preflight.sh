@@ -3,7 +3,9 @@
 # It never changes anything; for each missing piece it prints the command to run.
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-[ -f "$ROOT/.env" ] && set -a && . "$ROOT/.env" && set +a
+. "$ROOT/common/load-env.sh"
+omni_load_env "$ROOT/.env"
+unset -f omni_load_env
 : "${AWS_REGION:?set AWS_REGION in .env}"
 
 ok()   { printf '  \033[32m✔\033[0m %s\n' "$*"; }

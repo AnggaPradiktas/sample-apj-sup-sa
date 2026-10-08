@@ -4,12 +4,20 @@
 # expire, re-run ./up.sh.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"; ROOT="$(cd "$HERE/.." && pwd)"
-[ -f "$ROOT/.env" ] && set -a && . "$ROOT/.env" && set +a
+. "$ROOT/common/load-env.sh"
+omni_load_env "$ROOT/.env"
+unset -f omni_load_env
 : "${AWS_REGION:?set AWS_REGION in .env}"
 
-eval "$(aws configure export-credentials --format env)"
+creds=$(aws configure export-credentials --format env) || exit 1
+eval "$creds"
+unset creds
 cd "$HERE"
-docker compose --env-file "$ROOT/.env" up -d --build "$@"
+if [ -f "$ROOT/.env" ]; then
+  docker compose --env-file "$ROOT/.env" up -d --build "$@"
+else
+  docker compose up -d --build "$@"
+fi
 echo
 echo "frontend http://localhost:8000   orders http://localhost:8001   payments http://localhost:8002"
 echo "collector logs:  docker compose logs -f otel-collector"
