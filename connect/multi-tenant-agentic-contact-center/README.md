@@ -4,6 +4,25 @@ This is a **Amazon Connect + Amazon Bedrock AgentCore** sample built on a paymen
 
 ![The AnyCompanyPay landing page, offering a merchant workspace and an admin/agent workspace](docs/images/homepage.png)
 
+### Amazon Connect features in this sample
+
+| Amazon Connect feature | How the sample uses it | Module |
+|---|---|---|
+| **Instance + embedded CCP** (Streams API) | Agents work from the CCP embedded in the admin workspace | `infra/` |
+| **Chat** (`StartChatContact`, Chat SDK, participant service) | Floating live-chat widget and "Chat about this case"; tenant stamped from the JWT as contact attributes | `infra/` |
+| **Contact flows** | Inbound chat, case chat, routed chat (tiers/owner/hours), after-hours task flow, screen-share flow, all defined in CDK | `infra/`, `connect-routing/`, `connect-screenshare/` |
+| **Amazon Connect Cases** | Support cases with a template and custom fields; merchants see only their own; comments + linked contacts; chat transcript on the case | `infra/` |
+| **Customer Profiles** | B2B model: account profile per merchant (with `tier`) + individual profiles per user | `infra/` |
+| **Amazon Q in Connect AI agents** | Self-service orchestrator with a custom prompt, an `Escalate` tool, and MCP tools (via **AgentCore Gateway**) that read only the caller's transactions | `connect-ai-agent/` |
+| **Amazon Lex V2 bots** | Hands chat to the AI agent; a small Yes/No bot asks after hours "log this as a support case?" | `connect-ai-agent/`, `connect-routing/` |
+| **Queues + routing profiles + contact priority** | Tier queues (VIP / key / shared) at priority 1 / 2 / 5; backlog and live-agent routing profiles | `connect-routing/` |
+| **Routing criteria (preferred agent)** | A chat on an open case is offered to the case owner first, then falls back to the queue | `connect-routing/` |
+| **Hours of operation** (incl. overrides, `GetEffectiveHoursOfOperations`) | AI chat 24/7; human hand-off only in business hours; next-opening time for follow-ups | `connect-routing/` |
+| **Tasks** (scheduled `StartTaskContact`) | After-hours requests become a case + one scheduled follow-up task at the next opening, VIP → key → shared | `connect-routing/` |
+| **Flow Lambda integration** | Contact context (tier, case owner) and after-hours case/task scheduling | `connect-routing/` |
+| **In-app web calling + screen sharing** (`StartWebRTCContact`, Chime SDK) | Merchant shares their screen from a case; agent watches live in the CCP | `connect-screenshare/` |
+| **Security profiles + users** | Agent permissions, the AI agent's MCP tool grant, video/screen-share access; demo agents provisioned by script | all |
+
 > **Documentation index** — this README is the conceptual guide. Everything else
 > lives in [`docs/`](docs/):
 > [`DEPLOYMENT.md`](docs/DEPLOYMENT.md) (deploy/operate),
