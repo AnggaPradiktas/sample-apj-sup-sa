@@ -146,7 +146,14 @@ function pick(fields: FieldValue[] | undefined, id: string | undefined): string 
   return (v?.stringValue ?? "") as string;
 }
 
-/** The chat's own case (if open + same tenant), else the merchant's latest open case. */
+/**
+ * Which case an after-hours request goes on (the merchant has already said "yes,
+ * log a case"):
+ *   1. a chat started FROM a case -> that case (if open + same tenant);
+ *   2. tonight's after-hours case: an open case of this merchant whose follow-up
+ *      task is still pending (no duplicate follow-ups for repeat contacts);
+ *   3. otherwise null -> a NEW case. Older, unrelated open cases are never reused.
+ */
 async function findOpenCase(merchantId: string, preferredCaseId: string): Promise<OpenCase | null> {
   const f = await caseFields(cases, CASES_DOMAIN_ID);
   const want = ["status", f["case_status"], f["merchant_id"], f["ooh_task_pending"], f["ooh_task_id"]].filter(
@@ -180,6 +187,7 @@ async function findOpenCase(merchantId: string, preferredCaseId: string): Promis
         andAll: [
           { field: { equalTo: { id: f["merchant_id"], value: str(merchantId) } } },
           { field: { equalTo: { id: "status", value: str("open") } } },
+          { field: { equalTo: { id: f["ooh_task_pending"], value: str("true") } } },
         ],
       },
       sorts: [{ fieldId: "last_updated_datetime", sortOrder: "Desc" }],
@@ -188,7 +196,7 @@ async function findOpenCase(merchantId: string, preferredCaseId: string): Promis
   );
   for (const c of res.cases ?? []) {
     const oc = c?.caseId ? toOpen(c.caseId, c.fields) : null;
-    if (oc) return oc;
+    if (oc?.pendingTaskId && (await taskStillLive(oc.pendingTaskId))) return oc;
   }
   return null;
 }
@@ -201,8 +209,8 @@ async function createOohCase(opts: {
 }): Promise<string> {
   const f = await caseFields(cases, CASES_DOMAIN_ID);
   const fields = [
-    { id: "title", value: str(`After-hours contact — ${opts.merchantName || opts.merchantId}`) },
-    { id: f["summary"], value: str("Merchant contacted support out of hours. Follow-up task scheduled for the next opening.") },
+    { id: "title", value: str(`After-hours request — ${opts.merchantName || opts.merchantId}`) },
+    { id: f["summary"], value: str("Logged from live chat outside business hours, at the merchant's request. An agent follows up at the next opening.") },
     { id: f["priority"], value: str(CASE_PRIORITY[opts.tier]) },
     { id: f["case_status"], value: str("Open") },
     { id: f["merchant"], value: str(opts.merchantName) },
@@ -273,6 +281,7 @@ async function nextOpening(nowMs: number) {
   return {
     ...r,
     timeZone,
+    nowLocal: human(Math.floor(nowMs / 1000)),
     scheduleLocal: zonedIso(r.scheduleEpoch * 1000, timeZone),
     nextOpenLocal: r.nextOpenEpoch ? human(r.nextOpenEpoch) : `after ${zonedDate(r.scheduleEpoch * 1000, timeZone)}`,
   };
@@ -340,7 +349,11 @@ async function intake(event: ConnectEvent) {
 
   // Dedup: one pending OOH task per case/merchant.
   if (found?.pendingTaskId && (await taskStillLive(found.pendingTaskId))) {
-    await comment(caseId, `Repeat after-hours contact ${contactId}; follow-up task ${found.pendingTaskId} already scheduled.`);
+    await comment(
+      caseId,
+      `Another chat received outside business hours (${when.nowLocal}). The follow-up already scheduled covers it.` +
+        ` [chat ${contactId.slice(0, 8)}]`
+    );
     return { ...base, result: "task-pending", taskId: found.pendingTaskId };
   }
 
@@ -363,8 +376,9 @@ async function intake(event: ConnectEvent) {
     });
     await comment(
       caseId,
-      `After-hours contact ${contactId}. Follow-up task ${taskId} scheduled for ${when.scheduleLocal}` +
-        `${when.reschedule ? " (closure exceeds the 6-day limit; it will re-schedule)" : ""}.`
+      `Chat received outside business hours (${when.nowLocal}). An agent will follow up when we open ` +
+        `(${when.nextOpenLocal})${when.reschedule ? "; the follow-up re-schedules itself for closures over 6 days" : ""}.` +
+        ` [chat ${contactId.slice(0, 8)}, follow-up task ${taskId.slice(0, 8)}]`
     );
     return { ...base, result: "task-created", taskId, reschedule: String(when.reschedule) };
   } catch (err) {

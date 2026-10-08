@@ -8,6 +8,8 @@ import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as lambdaNode from "aws-cdk-lib/aws-lambda-nodejs";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as subs from "aws-cdk-lib/aws-sns-subscriptions";
+import * as lex from "aws-cdk-lib/aws-lex";
+import * as cr from "aws-cdk-lib/custom-resources";
 import { oohTaskFlow, routedInboundFlow } from "./flows";
 
 /**
@@ -185,6 +187,93 @@ export class ConnectRoutingStack extends cdk.Stack {
     [fTier, fPending, fTaskId].forEach((f) => oohTemplate.addDependency(f));
 
     // ------------------------------------------------------------------
+    // "Log a case?" confirmation bot (after hours). The flow — not the AI —
+    // asks whether to log the request as a case, and reads the merchant's Yes /
+    // No through this small Lex V2 bot. Attached to the instance by deploy.sh
+    // (`connect associate-bot`), like the self-service bot.
+    // ------------------------------------------------------------------
+    const confirmBotName = `anycompany-pay-log-case${sfx}`;
+    const confirmBotRole = new iam.Role(this, "LogCaseBotRole", {
+      assumedBy: new iam.ServicePrincipal("lexv2.amazonaws.com"),
+      description: "AnyCompanyPay after-hours 'log a case?' confirmation bot",
+    });
+    const utter = (...u: string[]) => u.map((utterance) => ({ utterance }));
+    const confirmBot = new lex.CfnBot(this, "LogCaseBot", {
+      name: confirmBotName,
+      roleArn: confirmBotRole.roleArn,
+      dataPrivacy: { ChildDirected: false },
+      idleSessionTtlInSeconds: 300,
+      description: "After hours: confirm whether to log the merchant's request as a support case",
+      autoBuildBotLocales: true,
+      botLocales: [
+        {
+          localeId: "en_US",
+          nluConfidenceThreshold: 0.4,
+          intents: [
+            {
+              name: "LogCaseYes",
+              sampleUtterances: utter("Yes", "yes please", "yeah", "yep", "sure", "ok", "okay", "please do",
+                "log it", "log a case", "yes log a case", "go ahead", "do it", "Yes, log a case"),
+            },
+            {
+              name: "LogCaseNo",
+              sampleUtterances: utter("No", "no thanks", "no thank you", "nope", "not now", "don't",
+                "do not log it", "No, thanks", "never mind", "no need"),
+            },
+            { name: "FallbackIntent", parentIntentSignature: "AMAZON.FallbackIntent" },
+          ],
+        },
+      ],
+    });
+    const confirmVersion = new lex.CfnBotVersion(this, "LogCaseBotVersion", {
+      botId: confirmBot.attrId,
+      botVersionLocaleSpecification: [{ localeId: "en_US", botVersionLocaleDetails: { sourceBotVersion: "DRAFT" } }],
+    });
+    confirmVersion.addDependency(confirmBot);
+    const confirmAlias = new lex.CfnBotAlias(this, "LogCaseBotAlias", {
+      botId: confirmBot.attrId,
+      botAliasName: `${confirmBotName}-live`,
+      botVersion: confirmVersion.attrBotVersion,
+      botAliasLocaleSettings: [{ localeId: "en_US", botAliasLocaleSetting: { enabled: true } }],
+    });
+    confirmAlias.addDependency(confirmVersion);
+    // Attach the bot to the instance BEFORE the flow that references it. AssociateBot
+    // also writes the Connect invoke resource policy on the alias. Create/delete only
+    // (no update), so stack updates don't churn the association.
+    const lexV2Bot = { AliasArn: confirmAlias.attrArn };
+    const confirmBotAssoc = new cr.AwsCustomResource(this, "LogCaseBotAssociation", {
+      onCreate: {
+        service: "Connect",
+        action: "associateBot",
+        parameters: { InstanceId: instanceId, LexV2Bot: lexV2Bot },
+        physicalResourceId: cr.PhysicalResourceId.of(`log-case-bot-${confirmBotName}`),
+        ignoreErrorCodesMatching: "ResourceConflictException|DuplicateResourceException",
+      },
+      onDelete: {
+        service: "Connect",
+        action: "disassociateBot",
+        parameters: { InstanceId: instanceId, LexV2Bot: lexV2Bot },
+        ignoreErrorCodesMatching: "ResourceNotFoundException|InvalidRequestException",
+      },
+      policy: cr.AwsCustomResourcePolicy.fromStatements([
+        new iam.PolicyStatement({
+          actions: ["connect:AssociateBot", "connect:DisassociateBot"],
+          resources: [instanceArn, `${instanceArn}/*`],
+        }),
+        new iam.PolicyStatement({
+          actions: ["lex:DescribeBotAlias", "lex:CreateResourcePolicy", "lex:UpdateResourcePolicy",
+            "lex:DeleteResourcePolicy", "lex:DescribeResourcePolicy"],
+          resources: [confirmAlias.attrArn],
+        }),
+      ]),
+      installLatestAwsSdk: false,
+    });
+    confirmBotAssoc.node.addDependency(confirmAlias);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const dayAbbr = (d: string) => d.trim().slice(0, 1) + d.trim().slice(1, 3).toLowerCase();
+    const hoursText = `${dayAbbr(csDays[0])}–${dayAbbr(csDays[csDays.length - 1])} ${pad(openH)}:${pad(openM)}–${pad(closeH)}:${pad(closeM)}`;
+
+    // ------------------------------------------------------------------
     // Supervisor alerts (OOH scheduling failures, test B-07)
     // ------------------------------------------------------------------
     const alertTopic = new sns.Topic(this, "OohAlertTopic", {
@@ -334,6 +423,8 @@ export class ConnectRoutingStack extends cdk.Stack {
           checkHoursArn: inboundCheckHours.attrHoursOfOperationArn,
           fallbackQueueArn: sharedQueue.attrQueueArn,
           agentic,
+          confirmBotAliasArn: confirmAlias.attrArn,
+          hoursText,
         })
       ),
     });
@@ -341,6 +432,7 @@ export class ConnectRoutingStack extends cdk.Stack {
       taskFlow.addDependency(a);
       routedFlow.addDependency(a);
     }
+    routedFlow.node.addDependency(confirmBotAssoc);
 
     // ------------------------------------------------------------------
     // Outputs
@@ -360,5 +452,6 @@ export class ConnectRoutingStack extends cdk.Stack {
     out("OohSchedulerFnName", oohFn.functionName);
     out("OohAlertTopicArn", alertTopic.topicArn);
     out("DemoMode", String(demoMode));
+    out("LogCaseBotAliasArn", confirmAlias.attrArn);
   }
 }

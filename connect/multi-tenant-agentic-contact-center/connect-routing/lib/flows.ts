@@ -125,13 +125,19 @@ function flow(actions: Action[]) {
 }
 
 /**
- * Routed inbound chat flow (Patterns A + B).
+ * Routed inbound chat flow (Patterns A + B). The AI assistant is available 24/7;
+ * business hours only gate HUMAN agents.
  *
- *   log -> contact-context Lambda -> Check hours
- *     closed -> OOH scheduler (case + scheduled task) -> acknowledge -> end
- *     open   -> case chat?  yes -> greet -> owner routable? -> Set routing criteria (owner, expiry)
- *                           no  -> [optional agentic Lex/Q in Connect; Escalate continues]
- *            -> priority (1 active-case reply | tier 1/2/5) -> tier queue -> Transfer to queue
+ *   log -> contact-context Lambda
+ *     new issue  -> AI assistant (Lex / Q in Connect), any time
+ *                     Escalate -> Check hours -> open:   priority by tier -> tier queue
+ *                                             -> closed: "log this as a support case?" (Yes / No)
+ *                                                  Yes -> OOH scheduler (new case + task) -> acknowledge -> end
+ *                                                  No  -> back to the AI assistant
+ *     case chat  -> Check hours -> open:   greet -> owner routable? -> Set routing criteria (owner, expiry)
+ *                                          -> priority (1 active-case reply | tier) -> tier queue
+ *                               -> closed: AI assistant (as above; an escalation logs the follow-up)
+ *   (without the agentic bot, a new issue goes straight to the human path.)
  */
 export function routedInboundFlow(p: {
   contextFnArn: string;
@@ -139,31 +145,28 @@ export function routedInboundFlow(p: {
   checkHoursArn: string;
   fallbackQueueArn: string;
   agentic?: { botAliasArn: string; assistantArn: string };
+  /** Lex V2 alias that reads the merchant's Yes / No to "log a case?" after hours. */
+  confirmBotAliasArn: string;
+  /** Human-readable business hours, e.g. "Mon–Fri 08:00–18:00". */
+  hoursText: string;
 }) {
   const [LOG, CTX, HRS, OOH, OOH_ACK, OOH_ERR, CASE, CGREET, OWNER, CRIT, PRI, P1, P2, P5, SETQ, SETQ_FB, XFER, END] =
     Array.from({ length: 18 }, (_, i) => id(i + 1));
+  const HRS_CASE = id(19);
+  const [ASK, NOLOG, LEX_AGAIN] = [id(20), id(21), id(35)];
   const [WIS, WATT, LEX, LCMP] = [id(31), id(32), id(33), id(34)];
-  const standardEntry = p.agentic ? WIS : PRI;
+  // Where a chat goes for the AI assistant; without the bot, straight to a human (hours-gated).
+  const aiEntry = p.agentic ? WIS : HRS;
 
   const actions: Action[] = [
     logging(LOG, CTX),
     // On Lambda failure, External is empty: every Compare below falls through to
-    // standard routing at default priority into the fallback queue.
-    lambda(CTX, p.contextFnArn, HRS, HRS),
-    checkHours(HRS, p.checkHoursArn, CASE, OOH),
+    // the AI assistant / standard routing at default priority into the fallback queue.
+    lambda(CTX, p.contextFnArn, CASE, CASE),
+    compare(CASE, "$.External.isCaseChat", [["true", HRS_CASE]], aiEntry),
 
-    // ---- Pattern B: out of hours ----
-    lambda(OOH, p.oohFnArn, OOH_ACK, OOH_ERR, { action: "intake" }),
-    message(
-      OOH_ACK,
-      "Thanks for contacting AnyCompanyPay. We're currently closed. Your request is logged on case $.External.caseRef " +
-        "and our team will follow up when we open ($.External.nextOpenLocal).",
-      END
-    ),
-    message(OOH_ERR, "Thanks for contacting AnyCompanyPay. We're currently closed. Please reach out again during business hours.", END),
-
-    // ---- In hours ----
-    compare(CASE, "$.External.isCaseChat", [["true", CGREET]], standardEntry),
+    // ---- Case chat: the case team in hours, the AI assistant after hours ----
+    checkHours(HRS_CASE, p.checkHoursArn, CGREET, aiEntry),
     message(CGREET, "Thanks — this chat is linked to your support case. Connecting you to your case team…", OWNER),
     // ---- Pattern A: offer the reply to the case owner first ----
     compare(OWNER, "$.External.routeToOwner", [["true", CRIT]], PRI),
@@ -175,6 +178,9 @@ export function routedInboundFlow(p: {
       Parameters: { RoutingCriteria: "$.External.RoutingCriteria" },
       Transitions: { NextAction: PRI, Errors: [{ NextAction: PRI, ErrorType: "NoMatchingError" }] },
     },
+
+    // ---- A human is needed: only in business hours ----
+    checkHours(HRS, p.checkHoursArn, PRI, ASK),
     compare(PRI, "$.External.routingPriority", [["1", P1], ["2", P2]], P5),
     priority(P1, "1", SETQ),
     priority(P2, "2", SETQ),
@@ -182,12 +188,50 @@ export function routedInboundFlow(p: {
     setQueue(SETQ, "$.External.tierQueueArn", XFER, SETQ_FB),
     setQueue(SETQ_FB, p.fallbackQueueArn, XFER, END),
     transfer(XFER, END),
+
+    // ---- No agents now: ask before logging a case (the merchant decides) ----
+    {
+      Identifier: ASK,
+      Type: "ConnectParticipantWithLexBot",
+      Parameters: {
+        Text:
+          `Our support agents are offline right now (${p.hoursText}). ` +
+          "Would you like me to log this as a support case so an agent can follow up when we open?",
+        LexV2Bot: { AliasArn: p.confirmBotAliasArn },
+      },
+      Transitions: {
+        NextAction: NOLOG,
+        Conditions: [
+          { NextAction: OOH, Condition: { Operator: "Equals", Operands: ["LogCaseYes"] } },
+          { NextAction: NOLOG, Condition: { Operator: "Equals", Operands: ["LogCaseNo"] } },
+        ],
+        Errors: [
+          { NextAction: NOLOG, ErrorType: "NoMatchingCondition" },
+          { NextAction: NOLOG, ErrorType: "NoMatchingError" },
+        ],
+      },
+    },
+    message(
+      NOLOG,
+      `OK, I haven't logged a case. Our support agents are available ${p.hoursText}.`,
+      p.agentic ? LEX_AGAIN : END
+    ),
+
+    // ---- Pattern B: confirmed -> new case + follow-up task at the next opening ----
+    lambda(OOH, p.oohFnArn, OOH_ACK, OOH_ERR, { action: "intake" }),
+    message(
+      OOH_ACK,
+      "Thanks, I've logged your request as support case $.External.caseRef. An agent will follow up when we " +
+        "open ($.External.nextOpenLocal). You can see it under Support in your dashboard.",
+      END
+    ),
+    message(OOH_ERR, "Our support agents are offline right now. Please reach out again during business hours.", END),
     disconnect(END),
   ];
 
   if (p.agentic) {
-    // Same agentic self-service path as the existing inbound flow; an Escalate
-    // now lands in the merchant's tier queue with tier priority.
+    // The agentic self-service path (24/7). An Escalate goes to the hours check:
+    // a human in hours, the after-hours follow-up otherwise.
     actions.push(
       {
         Identifier: WIS,
@@ -218,7 +262,25 @@ export function routedInboundFlow(p: {
           Conditions: [],
         },
       },
-      compare(LCMP, "$.Lex.SessionAttributes.Tool", [["Escalate", PRI], ["Complete", END]], END)
+      // After "No" to logging a case: back to the assistant, same Q in Connect session.
+      {
+        Identifier: LEX_AGAIN,
+        Type: "ConnectParticipantWithLexBot",
+        Parameters: {
+          Text: "Is there anything else I can help you with?",
+          LexV2Bot: { AliasArn: p.agentic.botAliasArn },
+          LexSessionAttributes: { "x-amz-lex:q-in-connect:session-arn": "$.Wisdom.SessionArn" },
+        },
+        Transitions: {
+          NextAction: LCMP,
+          Errors: [
+            { NextAction: END, ErrorType: "NoMatchingError" },
+            { NextAction: LCMP, ErrorType: "NoMatchingCondition" },
+          ],
+          Conditions: [],
+        },
+      },
+      compare(LCMP, "$.Lex.SessionAttributes.Tool", [["Escalate", HRS], ["Complete", END]], END)
     );
   }
   return flow(actions);

@@ -9,10 +9,13 @@ profile are not modified.
 | Pattern | What happens |
 |---|---|
 | **A — case-owner reply routing** | A merchant chat on an **open case** (the "Chat about this case" button, `case_id` stamped server-side by `ChatApiFn`) is linked to the case and offered to the **case owner** (`assigned_user`) first: *Set routing criteria* step 1 = preferred agent with a 60 s expiry, then the longest-available agent in the tier queue. Contact priority **1**, ahead of new contacts (priority by tier). |
-| **B — after-hours backlog** | Out of hours, the chat is acknowledged and ended, and becomes **one case per merchant** (reused if open) plus **one scheduled task** for the next opening (`GetEffectiveHoursOfOperations`, overrides applied, 6-day cap with a re-schedule loop). At opening the task lands in `ooh-followup` with tier priority (VIP 1, key 2, shared 5). |
+| **B — after-hours backlog** | The AI assistant answers **24/7**; only human agents follow business hours. When a merchant asks for a human out of hours (Escalate), the chat asks **"Our support agents are offline right now (Mon–Fri 08:00–18:00). Would you like me to log this as a support case…?"** with **Yes, log a case / No, thanks** buttons (read by a small Lex bot, `anycompany-pay-log-case`). **No** logs nothing and hands back to the AI assistant. **Yes** acknowledges ("logged your request as support case … an agent will follow up when we open (…)") and becomes a **new "After-hours request — <merchant>" case** — old unrelated open cases are never reused; a repeat request the same night joins tonight's case while its follow-up is still pending, and a chat started from a case uses that case — plus **one scheduled task** for the next opening (`GetEffectiveHoursOfOperations`, overrides applied, 6-day cap with a re-schedule loop). At opening the task lands in `ooh-followup` with tier priority (VIP 1, key 2, shared 5). |
 
-New issues in hours still go through **agentic self-service** (Lex + Q in Connect) when
-`AnyCompanyPayLexStack` exists; an *Escalate* now lands in the merchant's tier queue.
+New issues — and case chats out of hours — go through **agentic self-service** (Lex + Q in Connect,
+24/7) when `AnyCompanyPayLexStack` exists. An *Escalate* is hours-gated: in hours it lands in the
+merchant's tier queue; out of hours it becomes the case + follow-up task above. In hours, case chats
+go straight to the case owner (Pattern A). Without the agentic bot, chats go straight to the
+hours-gated human path.
 
 ## Deploy
 

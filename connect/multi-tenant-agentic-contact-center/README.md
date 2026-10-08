@@ -200,12 +200,17 @@ Uses the same region/env resolution as deploy. Override with `REGION=<REGION>`, 
   the caller's rows — the tenant is **never** supplied by the model (the tool reads it only from the
   interceptor's top-level reserved key, so a model-nested value is ignored). The gateway, its tool
   target, and the interceptor are native `AWS::BedrockAgentCore::*` CDK resources.
+  For requests it cannot complete (e.g. **initiating a refund**), the assistant asks **"Would you like
+  me to escalate this to a human agent?"** and the chat shows **Yes / No** buttons; only **Yes** hands
+  the chat to a human (an explicit "talk to a human" escalates straight away).
 - **Case-owner routing + after-hours backlog (opt-in, `connect-routing/`)** — merchants are routed by
   **tier** (VIP / key / shared queue and contact priority 1 / 2 / 5). A chat on an **open case** is
   offered to the **case owner** first (preferred-agent routing step with an expiry, then the queue) at
-  priority 1, ahead of new contacts. **Out of hours** the chat is acknowledged and becomes one case per
-  merchant plus one **scheduled task** for the next opening, offered to backlog agents VIP → key →
-  shared.
+  priority 1, ahead of new contacts. The **AI assistant is available 24/7**; only human agents follow
+  business hours. When a merchant asks for a human **out of hours**, the chat asks **"Would you like me
+  to log this as a support case…?"** (Yes / No). **Yes** creates a **new** case plus one **scheduled
+  task** for the next opening, offered to backlog agents VIP → key → shared; **No** logs nothing and
+  returns to the AI assistant.
 - **Live screen sharing (opt-in, `connect-screenshare/`)** — from a case, a merchant starts a
   **web call** (Amazon Connect in-app/web calling, `StartWebRTCContact` + the Amazon Chime SDK) and
   **shares their screen**; the agent answers in the embedded CCP and sees it live. Tenant and case
@@ -472,12 +477,18 @@ Support queue ──(routing profile with the CHAT channel enabled)──▶ Age
 With the routing module wired, both chat types start in `anycompany-pay-chat-routed` instead:
 
 ```
-ContactContextFn (tier from Customer Profiles; case owner + status from Cases) → Check hours
-  open   → [case chat on an open, owned case] Set routing criteria: owner, 60 s → priority 1
-         → [new issue] agentic self-service (Lex / Q in Connect) → Escalate
-         → priority by tier (1/2/5) → tier queue → agent
-  closed → OohSchedulerFn: reuse/create the merchant's case, schedule ONE task for the next opening
-         → acknowledge → end          (task → anycompany-pay-ooh-task flow → ooh-followup queue)
+ContactContextFn (tier from Customer Profiles; case owner + status from Cases)
+  new issue → AI assistant (Lex / Q in Connect), 24/7 ── Escalate ──┐
+  case chat → Check hours ─ open → Set routing criteria: owner, 60 s → priority 1 → tier queue → agent
+                          └ closed → AI assistant (24/7) ── Escalate ──┤
+                                                                       ▼
+                               Check hours ─ open   → priority by tier (1/2/5) → tier queue → agent
+                                           └ closed → "log this as a support case?" (Yes / No, small Lex bot)
+                                                      No  → back to the AI assistant
+                                                      Yes → OohSchedulerFn: NEW case (or tonight's case with a
+                                                            pending follow-up), ONE task for the next opening
+                                                            → "logged as support case … follow up when we open"
+                                                      (task → anycompany-pay-ooh-task → ooh-followup queue)
 ```
 
 Everything except the agent user is created in CDK (`connect-stack.ts`): the instance, the approved
