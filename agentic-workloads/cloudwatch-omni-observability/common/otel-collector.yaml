@@ -1,4 +1,6 @@
-# OpenTelemetry Collector (contrib) config for running the sample apps locally.
+# OpenTelemetry Collector config for running the sample apps locally. Tested on the
+# ADOT Collector v0.50.0 (core v0.158.0) that docker-compose.yml runs. It uses only
+# upstream components, so it also runs on the OpenTelemetry Collector Contrib image.
 # It receives OTLP from the apps and forwards SigV4-signed requests to the
 # CloudWatch OTLP endpoints. This is the "bring your own collector" path in
 # https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch-OTLPSimplesetup.html
@@ -29,12 +31,12 @@ extensions:
     service: monitoring
 
 exporters:
-  otlphttp/traces:
+  otlp_http/traces:
     compression: gzip
     traces_endpoint: https://xray.${env:AWS_REGION}.amazonaws.com/v1/traces
     auth:
       authenticator: sigv4auth/traces
-  otlphttp/logs:
+  otlp_http/logs:
     compression: gzip
     logs_endpoint: https://logs.${env:AWS_REGION}.amazonaws.com/v1/logs
     headers:
@@ -42,7 +44,7 @@ exporters:
       x-aws-log-stream: default
     auth:
       authenticator: sigv4auth/logs
-  otlphttp/metrics:
+  otlp_http/metrics:
     compression: gzip
     metrics_endpoint: https://monitoring.${env:AWS_REGION}.amazonaws.com/v1/metrics
     auth:
@@ -56,12 +58,12 @@ service:
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [otlphttp/traces, debug]
+      exporters: [otlp_http/traces, debug]
     logs:
       receivers: [otlp]
       processors: [batch]
-      exporters: [otlphttp/logs]
+      exporters: [otlp_http/logs]
     metrics:
       receivers: [otlp]
       processors: [batch]
-      exporters: [otlphttp/metrics]
+      exporters: [otlp_http/metrics]

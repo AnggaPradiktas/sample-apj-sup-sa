@@ -71,7 +71,7 @@ flowchart LR
         subgraph shop["shop (Docker) — samples 02 / 03"]
             frontend --> orders --> payments
         end
-        collector["OpenTelemetry Collector<br/>(sigv4auth)"]
+        collector["ADOT Collector<br/>(sigv4auth)"]
         agent -. "httpx + W3C traceparent<br/>(03 only)" .-> orders
         shop -- OTLP --> collector
     end
@@ -112,7 +112,7 @@ flowchart LR
 ```
 
 * **Agents** export traces straight from the ADOT SDK. No collector is needed, which is the documented path for AI agents.
-* **Applications** export through a collector. On EC2/ECS/EKS the docs recommend the CloudWatch agent (`default:otel` preset). Locally, these samples use the upstream OpenTelemetry Collector with `sigv4auth`, which is the "bring your own collector" path. Entity correlation and Container Insights aren't available on that path. See [`common/otel-collector.yaml`](common/otel-collector.yaml).
+* **Applications** export through a collector. On EC2/ECS/EKS the docs recommend the CloudWatch agent (`default:otel` preset). Locally, these samples run the AWS Distro for OpenTelemetry (ADOT) Collector from ECR Public with `sigv4auth`, which is the "bring your own collector" path. The config uses only upstream components, so it also runs unchanged on the upstream OpenTelemetry Collector Contrib image. Entity correlation and Container Insights aren't available on that path. See [`common/otel-collector.yaml`](common/otel-collector.yaml).
 
 ## Prerequisites (once per account and Region)
 
@@ -177,7 +177,7 @@ These are samples for a **sandbox account**. Review them before reusing any part
 
 * **Credentials stay local.** `.env` is gitignored; only `.env.example` (no values) is tracked. Scripts use your current AWS CLI session or short-lived STS credentials, and nothing writes long-term keys to disk.
 * **Local services listen on `127.0.0.1` only.** The collector signs everything it receives with your AWS credentials, and `payments` has an unauthenticated `/chaos` endpoint, so neither is published to your network. Don't change the port bindings to `0.0.0.0`.
-* **Containers run as a non-root user**, and the collector image is pinned to a version.
+* **Containers run as a non-root user**, and the collector image is pinned by digest, so a re-pushed tag can't swap the binary that holds your AWS credentials.
 * **IAM is scoped to what each step calls.** Service trust policies carry `aws:SourceAccount`/`aws:SourceArn` conditions, `iam:PassRole` is limited to the roles the stack creates or that you pass in, and `Resource: "*"` appears only where the API has no resource ARN yet (space creation, read-only Identity Center lookups, `cloudwatch:PutRecords`).
 * **People sign in through IAM Identity Center groups** with Space Admin or read-only Viewer, not per-user IAM grants.
 * **Optional hardening before production:** encrypt the alerts SNS topic with a customer managed KMS key whose policy allows `cloudwatch.amazonaws.com`, set a customer managed key on the space, and replace the demo shop's unauthenticated endpoints.

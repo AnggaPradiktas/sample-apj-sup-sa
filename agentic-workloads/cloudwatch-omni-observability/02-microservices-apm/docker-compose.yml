@@ -13,9 +13,13 @@ x-otel-env: &otel-env
   OTEL_METRIC_EXPORT_INTERVAL: "15000"
   # Drop the per-request ASGI "http send/receive" internal spans.
   OTEL_PYTHON_FASTAPI_EXCLUDE_SPANS: "receive,send"
+  # Don't trace the Compose healthcheck probes (one per service every 10 s).
+  OTEL_PYTHON_FASTAPI_EXCLUDED_URLS: "healthz"
 
 x-http-healthcheck: &http-healthcheck
-  test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=2)"]
+  # http.client, not urllib: it speaks only HTTP, never follows a redirect or uses a proxy,
+  # and anything but a 200 exits non-zero.
+  test: ["CMD", "python", "-c", "import http.client, sys; c = http.client.HTTPConnection('localhost', 8000, timeout=2); c.request('GET', '/healthz'); sys.exit(c.getresponse().status != 200)"]
   interval: 10s
   timeout: 3s
   retries: 5
@@ -23,7 +27,10 @@ x-http-healthcheck: &http-healthcheck
 
 services:
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.162.0
+    # AWS Distro for OpenTelemetry (ADOT) Collector from ECR Public, pinned by digest.
+    # v0.50.0 is built on collector core v0.158.0. Before adding a component to
+    # ../common/otel-collector.yaml, check that this release includes it.
+    image: public.ecr.aws/aws-observability/aws-otel-collector:v0.50.0@sha256:7968fb60db6a2390a47ba6a2df029745638486e285c9b2487da1b722d0855a3e
     command: ["--config=/etc/otelcol/config.yaml"]
     volumes:
       - ../common/otel-collector.yaml:/etc/otelcol/config.yaml:ro
