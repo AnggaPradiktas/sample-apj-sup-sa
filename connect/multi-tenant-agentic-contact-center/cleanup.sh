@@ -76,6 +76,9 @@ USE_CDK="${USE_CDK:-0}"
 # The CDK stacks, in the order they must be DESTROYED (dependents first).
 # Module dir | stack name.
 # Ordering rules (dependents first):
+#  - AnyCompanyPayConnectA2aStack (opt-in A2A demo: mock partner endpoint, its Lex
+#    bot + chat flow; its API-only AI agent/prompt/application are removed with the
+#    other Q in Connect + AppIntegrations objects below) -> first.
 #  - AnyCompanyPayConnectScreenShareStack (opt-in screen sharing: queue, flow,
 #    security profile, API) -> first.
 #  - AnyCompanyPayConnectRoutingStack (opt-in routing module: flows, queues, hours,
@@ -90,6 +93,7 @@ USE_CDK="${USE_CDK:-0}"
 #  - AnyCompanyPayConnectAiAgentStack (tool Lambda) must go before Aurora (its ENIs live in
 #    the Aurora VPC and block VPC/subnet deletion until they drain).
 STACKS=(
+  "connect-a2a|AnyCompanyPayConnectA2aStack${ENV_NAME:+-${ENV_NAME}}"
   "connect-screenshare|AnyCompanyPayConnectScreenShareStack${ENV_NAME:+-${ENV_NAME}}"
   "connect-routing|AnyCompanyPayConnectRoutingStack${ENV_NAME:+-${ENV_NAME}}"
   "connect-ai-agent|AnyCompanyPayLexStack"

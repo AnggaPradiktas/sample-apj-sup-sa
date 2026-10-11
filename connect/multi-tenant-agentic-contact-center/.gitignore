@@ -36,3 +36,7 @@ knowledge-base/
 
 # CDK context caches account-specific lookups (account id, AZs, VPC ids) — never commit
 **/cdk.context.json
+
+# Local design documents (requirements input) — never commit
+/design-docs/
+*.docx
