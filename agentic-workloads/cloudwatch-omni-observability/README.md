@@ -138,25 +138,66 @@ flowchart LR
    If `which aws` shows a per-user install (for example `~/.local/bin/aws`), reinstall to that location without `sudo` as described in [Installing or updating the AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) (macOS › "Install for the current user"). On Linux and Windows, follow the same page. `common/preflight.sh` tells you when the CLI is too old. The Python scripts don't need the CLI for Omni; they use `boto3>=1.43`.
 6. **Credentials that can write telemetry.** The managed policies `AWSXrayWriteOnlyAccess` (agent traces) and `CloudWatchAgentServerPolicy` (collector) cover it. Use a sandbox account, not production.
 
+## Setup
+
+Clone only this sample using sparse checkout:
+
+```bash
+git clone https://github.com/aws-samples/sample-apj-sup-sa.git
+cd sample-apj-sup-sa
+git sparse-checkout init --cone
+git sparse-checkout set agentic-workloads/cloudwatch-omni-observability
+cd agentic-workloads/cloudwatch-omni-observability
+```
+
+Copy the example environment file and fill it in. Every sample reads this one `.env`, and it's gitignored:
+
+```bash
+cp .env.example .env                  # AWS_REGION, OMNI_DOMAIN_ID, MODEL_ID, ...
+```
+
 With an **organization** domain, everything runs with member-account credentials. `common/assume-member-role.sh` assumes `OMNI_MEMBER_ROLE_ARN` from `.env` and exports them for the current shell (about 1 hour; re-source to refresh).
 
 Run the read-only preflight check. It lists your spaces, Transaction Search status, and identity, and prints the commands for anything missing. It changes nothing:
 
 ```bash
-cp .env.example .env                  # then edit
 source common/assume-member-role.sh   # organization domain only: act in the member account (every new shell)
 ./common/preflight.sh
 ```
 
-## Layout
+Then deploy step 0 ([`00-prerequisites`](00-prerequisites/)) and work through samples 01–04 in order. Each sample's README has its own run steps.
+
+## Project Structure
 
 ```
-common/            collector config, preflight checks, Omni SQL query helper
-00-prerequisites/  CDK stack: space, dataset integration, roles, shared resources
-01-agent-observability/
-02-microservices-apm/
-03-agent-app-correlation/
-04-alerting-investigation/
+.
+├── .env.example                  # Every setting the samples read (copy to .env)
+├── common/
+│   ├── preflight.sh              # Read-only checks: identity, spaces, Transaction Search, model access
+│   ├── assume-member-role.sh     # Exports member-account credentials (organization domain)
+│   ├── otel-collector.yaml       # Collector config: OTLP in, SigV4-signed OTLP out
+│   ├── omni_query.py             # Runs any .sql file in this repo against your space
+│   └── smoke_test.py             # End-to-end check of every sample
+├── 00-prerequisites/             # CDK stack: space, dataset integration, IAM roles, log group, SNS topic
+│   ├── omni_prereqs/stack.py
+│   ├── lambda/space_handler/     # Custom resource that calls CreateSpace
+│   └── enable_sso.py             # Identity Center sign-in and groups for the domain
+├── 01-agent-observability/       # Strands support agent on Bedrock, exported with ADOT
+│   ├── agent/support_agent.py
+│   ├── evaluation/cdk/           # ScopeAdherence evaluator + online evaluation config
+│   └── queries/                  # Agent turns, tool calls, tokens, evaluation scores
+├── 02-microservices-apm/         # frontend → orders → payments FastAPI shop (Docker Compose)
+│   ├── shop/
+│   ├── docker-compose.yml        # Shop, load generator, ADOT Collector
+│   ├── chaos.sh                  # Injects latency and errors into payments
+│   └── queries/                  # RED metrics, failed and slow spans, PromQL
+├── 03-agent-app-correlation/     # Agent tool calls into the shop, one trace end to end
+│   ├── run_scenario.sh           # baseline → incident → recovery
+│   └── queries/
+├── 04-alerting-investigation/
+│   ├── setup_alert_profile.py    # Access profile and grants that alerts evaluate as
+│   └── create_alerts.py          # Latency, error, tool-failure, and quality alerts
+└── docs/screenshots/
 ```
 
 `common/smoke_test.py` checks the whole deployment in one go: stacks, space, SSO group grants, data from every sample, evaluation scores, and alerts. `--live` also sends fresh traffic and waits until it's queryable. It's read-only otherwise and exits non-zero on any failure:
@@ -171,6 +212,44 @@ python common/smoke_test.py --live
 python common/omni_query.py 01-agent-observability/queries/token_usage.sql
 ```
 
+## AWS Services Used
+
+| Service | Purpose |
+|---------|---------|
+| Amazon CloudWatch Omni | Space, web UI, SQL and PromQL queries, application map, alerts |
+| Amazon CloudWatch (Logs, Metrics, Dataset) | OTLP endpoints for logs and metrics, and the Dataset that correlates logs and traces |
+| CloudWatch Observability Admin | Dataset integration that forwards log groups into the Dataset |
+| AWS X-Ray (Transaction Search) | OTLP endpoint for traces, which land as searchable spans |
+| Amazon Bedrock | Model for the support agent, and the judge model for the custom evaluator |
+| Amazon Bedrock AgentCore Evaluations | Online evaluation of live agent traffic, with `Builtin.Helpfulness` and the custom `ScopeAdherence` evaluator |
+| AWS IAM Identity Center | People sign in to Omni through groups (Space Admin, Viewer) |
+| AWS CDK and AWS CloudFormation | Step 0 and the evaluation stack |
+| AWS Lambda | Custom resource that creates the space (no CloudFormation type yet) |
+| Amazon SNS | Alert notifications |
+| AWS DevOps Agent | Root-cause investigation of a fired alert (sample 04) |
+| AWS IAM and AWS STS | Scoped roles, and short-lived member-account credentials |
+| Amazon ECR Public | Base image for the shop and the ADOT Collector image |
+
+## Third-Party and Open-Source Components
+
+| Component | Purpose |
+|-----------|---------|
+| [Strands Agents](https://strandsagents.com) | Agent framework for the support agent |
+| [AWS Distro for OpenTelemetry](https://aws-otel.github.io/) | Python auto-instrumentation for the agent, and the collector for the shop |
+| [OpenTelemetry](https://opentelemetry.io/) | Python SDK and instrumentation for the shop (FastAPI, HTTPX) |
+| [FastAPI](https://fastapi.tiangolo.com/) and Uvicorn | The three shop services |
+| [Docker Compose](https://docs.docker.com/compose/) | Runs the shop, load generator, and collector locally |
+| [Slack](https://slack.com/) (optional) | Alert notifications, alongside or instead of SNS |
+
+## Key Concepts
+
+- **Space and Dataset**: Omni reads one space per account and Region. The Dataset integration forwards log groups into its Dataset, and Transaction Search lands spans there, so logs and traces are queried together.
+- **Two export paths**: the agent exports traces straight to the X-Ray OTLP endpoint, signed with SigV4. The shop exports through a local collector that signs for it. Both are standard OTLP, so the same code runs on EC2, ECS, or EKS with the CloudWatch agent as the collector.
+- **Trace context across agent and app**: HTTPX instrumentation injects the W3C `traceparent` header on the agent's tool calls, and FastAPI continues it, so one trace spans agent → orders → payments.
+- **Evaluation on live traffic**: an LLM-as-judge evaluator scores agent turns as they happen, and catches a well-formed but out-of-scope answer that error rates and generic helpfulness miss.
+- **Span-derived RED metrics**: `cloudwatch-plugin-otel` turns spans into request, error, and duration metrics, which power the service views and PromQL without custom dashboards.
+- **Alerts run as an access profile**: an alert evaluates its query with the permissions of an access profile, so it needs a trust grant and a permission grant, like a person would.
+
 ## Security
 
 These are samples for a **sandbox account**. Review them before reusing any part in production.
@@ -181,8 +260,6 @@ These are samples for a **sandbox account**. Review them before reusing any part
 * **IAM is scoped to what each step calls.** Service trust policies carry `aws:SourceAccount`/`aws:SourceArn` conditions, `iam:PassRole` is limited to the roles the stack creates or that you pass in, and `Resource: "*"` appears only where the API has no resource ARN yet (space creation, read-only Identity Center lookups, `cloudwatch:PutRecords`).
 * **People sign in through IAM Identity Center groups** with Space Admin or read-only Viewer, not per-user IAM grants.
 * **Optional hardening before production:** encrypt the alerts SNS topic with a customer managed KMS key whose policy allows `cloudwatch.amazonaws.com`, set a customer managed key on the space, and replace the demo shop's unauthenticated endpoints.
-
-
 
 ## Cost and cleanup
 
@@ -202,3 +279,6 @@ Still there afterwards, by design:
 
 Remove any of these yourself only once you're sure nothing else in the account uses them.
 
+## License
+
+This library is licensed under the MIT-0 License. See the [LICENSE](../../LICENSE) file.
