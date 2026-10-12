@@ -8,8 +8,12 @@ import sys
 from pathlib import Path
 from typing import Iterator
 
+# An allowlist, not any NAME=value: the shell loader exports these into the caller's
+# environment, so a stray PATH or LD_PRELOAD in .env must not get through. Add a key
+# here when a sample starts reading a new setting.
 _ENV_KEY = re.compile(
-    r"(?:AWS_(?:REGION|PROFILE)|OMNI_[A-Z0-9_]+|MODEL_ID|JUDGE_MODEL_ID|SHOP_LOG_GROUP|ALERTS_TOPIC_ARN)"
+    r"(?:AWS_(?:REGION|PROFILE)|OMNI_[A-Z0-9_]+|MODEL_ID|JUDGE_MODEL_ID|SHOP_LOG_GROUP|ALERTS_TOPIC_ARN"
+    r"|AGENT_SERVICE_NAME|PROMPT_VERSION|TOOL_TIMEOUT_SECONDS|ORDERS_API_URL|RPS)"
 )
 
 

@@ -42,7 +42,8 @@ def on_event(event, _context):
     if event["RequestType"] == "Create":
         return create(props)
     if event["RequestType"] == "Update":
-        return update(event["PhysicalResourceId"], props, event.get("OldResourceProperties", {}))
+        return update(event["PhysicalResourceId"], props, event.get("OldResourceProperties", {}),
+                      event.get("StackId"))
     return delete(event["PhysicalResourceId"], props, event.get("StackId"))
 
 
@@ -180,16 +181,20 @@ def create(props):
     return response(space, url, adopted, grant_ids)
 
 
-def update(space_id, props, old):
-    if old.get("AdoptExistingSpace") == "true" and props.get("AdoptExistingSpace") != "true":
-        raise RuntimeError("Cannot un-adopt a space; retain and remove the stack before managing it separately.")
-    if (props["DomainId"] != old.get("DomainId")
-            or props["DataAccessRoleArn"] != old.get("DataAccessRoleArn")
-            or props.get("AgentCoreEvaluationRoleArn") != old.get("AgentCoreEvaluationRoleArn")):
-        raise RuntimeError(
-            "Changing the domain, space access role, or AgentCore evaluation role needs a new space. "
-            "Delete the space first."
-        )
+def update(space_id, props, old, stack_id=None):
+    # An update rollback sends the previous properties as the new ones, so it looks like
+    # the reverse of the change being undone. Skip the guards then: the rejected forward
+    # update changed nothing, and refusing the revert leaves the stack UPDATE_ROLLBACK_FAILED.
+    if stack_status(stack_id) != "UPDATE_ROLLBACK_IN_PROGRESS":
+        if old.get("AdoptExistingSpace") == "true" and props.get("AdoptExistingSpace") != "true":
+            raise RuntimeError("Cannot un-adopt a space; retain and remove the stack before managing it separately.")
+        if (props["DomainId"] != old.get("DomainId")
+                or props["DataAccessRoleArn"] != old.get("DataAccessRoleArn")
+                or props.get("AgentCoreEvaluationRoleArn") != old.get("AgentCoreEvaluationRoleArn")):
+            raise RuntimeError(
+                "Changing the domain, space access role, or AgentCore evaluation role needs a new space. "
+                "Delete the space first."
+            )
     domain_id, url, _ = resolve_domain(props["DomainId"])
     if props["SpaceName"] != old.get("SpaceName") and old.get("AdoptExistingSpace") != "true":
         omni.update_space(spaceId=space_id, name=props["SpaceName"])
@@ -199,16 +204,21 @@ def update(space_id, props, old):
     return response(space, url, old.get("AdoptExistingSpace") == "true", grant_ids)
 
 
+def stack_status(stack_id):
+    """Return the stack's status, or None when it can't be read."""
+    if not stack_id:
+        return None
+    try:
+        return cloudformation.describe_stacks(StackName=stack_id)["Stacks"][0]["StackStatus"]
+    except (BotoCoreError, ClientError):
+        log.exception("could not determine stack status for %s", stack_id)
+        return None
+
+
 def is_create_rollback(stack_id):
     """Return whether CloudFormation is deleting this resource during create rollback."""
-    if not stack_id:
-        return False
-    try:
-        status = cloudformation.describe_stacks(StackName=stack_id)["Stacks"][0]["StackStatus"]
-    except (BotoCoreError, ClientError):
-        log.exception("could not determine stack status for %s; preserving the space", stack_id)
-        return False
-    return status == "ROLLBACK_IN_PROGRESS"
+    # An unreadable status reads as "not a rollback", which preserves the space.
+    return stack_status(stack_id) == "ROLLBACK_IN_PROGRESS"
 
 
 def delete(space_id, props, stack_id=None):

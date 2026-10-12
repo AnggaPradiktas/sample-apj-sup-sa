@@ -209,7 +209,7 @@ python common/smoke_test.py --live
 `common/omni_query.py` runs any `.sql` file in this repo against your space. It's handy for checking a query before you put it on a dashboard or an alert:
 
 ```bash
-python common/omni_query.py 01-agent-observability/queries/token_usage.sql
+python common/omni_query.py 01-agent-observability/queries/token_usage.sql --var service=support-agent
 ```
 
 ## AWS Services Used

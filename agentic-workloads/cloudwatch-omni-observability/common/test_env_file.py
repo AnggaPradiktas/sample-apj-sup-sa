@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from common.env_file import load_env, parse_env_value
+from common.env_file import load_env, parse_env, parse_env_value
 
 
 class EnvFileTest(unittest.TestCase):
@@ -34,8 +34,22 @@ class EnvFileTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "must be quoted"):
                 load_env(path)
 
+    def test_accepts_sample_settings(self):
+        settings = {
+            "RPS": "5",
+            "AGENT_SERVICE_NAME": "my-agent",
+            "PROMPT_VERSION": "v2",
+            "TOOL_TIMEOUT_SECONDS": "3",
+            "ORDERS_API_URL": "http://localhost:8001",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / ".env"
+            path.write_text("".join(f"{key}={value}\n" for key, value in settings.items()))
+            self.assertEqual(dict(parse_env(path)), settings)
+
     def test_rejects_invalid_keys(self):
-        for assignment in ("export FOO=bar", "FOO BAR=x", "1FOO=x", "lowercase=x", "UID=1", "GID=1"):
+        for assignment in ("export FOO=bar", "FOO BAR=x", "1FOO=x", "lowercase=x", "UID=1", "GID=1",
+                           "PATH=/tmp", "LD_PRELOAD=x.so", "PYTHONPATH=/tmp"):
             with self.subTest(assignment=assignment), tempfile.TemporaryDirectory() as directory:
                 path = Path(directory) / ".env"
                 path.write_text(f"{assignment}\n")
