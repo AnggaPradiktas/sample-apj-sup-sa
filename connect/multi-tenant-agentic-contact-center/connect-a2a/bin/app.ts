@@ -16,5 +16,5 @@ const envName = ((app.node.tryGetContext("envName") as string) ?? "").trim();
 new ConnectA2aStack(app, `AnyCompanyPayConnectA2aStack${envName ? `-${envName}` : ""}`, {
   env: { account: process.env.CDK_DEFAULT_ACCOUNT, region },
   description:
-    "AnyCompanyPay Connect A2A demo (opt-in): chat handed to an external AI agent (mock Level3) over the Connect A2A extension. Additive.",
+    "AnyCompanyPay Connect A2A demo (opt-in): chat handed to an external AI agent (a mock partner) over the Connect A2A extension. Additive.",
 });

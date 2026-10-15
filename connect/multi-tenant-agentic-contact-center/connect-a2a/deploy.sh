@@ -1,6 +1,6 @@
 #!/bin/bash
 # Deploy the OPT-IN agent-to-agent (A2A) demo: Amazon Connect hands a chat to an
-# external AI agent (a mock "Level3" partner) over the Connect A2A extension.
+# external AI agent (a mock partner) over the Connect A2A extension.
 #
 # Additive: a new stack (KMS key, API-key secret, mock partner WebSocket endpoint,
 # a NEW Lex bot + chat flow), plus API-only Connect objects created by

@@ -7,7 +7,7 @@ shows both sides on chat:
 - **Customer side** (what any Connect customer configures for a partner agent): API key storage
   Connect can read, the `A2A_SERVER` application, the security-profile allow-list, an orchestrator
   AI agent with an immediate handoff, and a flow that routes the partner's outcome.
-- **Partner side**: a mock "**Level3**" agent that implements the Connect A2A protocol contract
+- **Partner side**: a mock partner agent that implements the Connect A2A protocol contract
   (text session) on API Gateway WebSocket + Lambda, so the demo is self-contained.
 
 It is additive. It has its own stack, Lex bot, security profile, prompt, AI agent and chat flow. The
@@ -37,10 +37,10 @@ bash deploy.sh
 In the Connect admin website open **Test chat**, choose the flow **anycompany-pay-chat-a2a**, and
 chat. The mock partner is rule-based so results are predictable:
 
-| You type | Level3 (mock) does | Then |
+| You type | Partner (mock) does | Then |
 |---|---|---|
 | a question, e.g. "What is the payout time?" | answers; the conversation continues | — |
-| "agent", "human", "person"… | writes `l3_intent`, `l3_summary`, `l3_outcome`, `l3_escalation_reason` to the contact, then `FINISH ESCALATE` | "Connecting you to a support agent…" → support queue; the agent sees the `l3_*` attributes |
+| "agent", "human", "person"… | writes `partner_intent`, `partner_summary`, `partner_outcome`, `partner_escalation_reason` to the contact, then `FINISH ESCALATE` | "Connecting you to a support agent…" → support queue; the agent sees the `partner_*` attributes |
 | "bye", "no thanks"… | `FINISH COMPLETE` | "Thanks for chatting with us." → end |
 | "simulate failure" | `TASK_STATE_FAILED` (structured error) | fallback → support queue |
 
@@ -54,11 +54,11 @@ Customer chat ──► Connect flow ──► Lex bot (AMAZON.QInConnectIntent)
                     │                        │ audioStreamingEnabled=false)
                     │                        ▼
                     │        wss://…/a2a  (Authorization: Bearer <API key from Secrets Manager>)
-                    │        Level3 mock: INIT_SESSION → CHANNEL_STATE READY → text turns →
+                    │        Partner mock: INIT_SESSION → CHANNEL_STATE READY → text turns →
                     │                     TEXT_RESPONSE_CHUNK + TRACING_SPAN → FINISH
                     ▼
-   Tool = Escalate / l3_outcome = ESCALATE  → support queue
-   Tool = Complete / l3_outcome = COMPLETE  → thanks, end
+   Tool = Escalate / partner_outcome = ESCALATE  → support queue
+   Tool = Complete / partner_outcome = COMPLETE  → thanks, end
    anything else (partner failed, no outcome) → support queue
 ```
 
@@ -89,7 +89,7 @@ as `$.Lex.SessionAttributes.Tool`.
 > **first** turn, the flow receives `Tool = Escalate / Complete` as documented. When it finishes on
 > a **later** turn, Connect processes the `FINISH` (the session spans show `return_to_agent
 > ESCALATE / COMPLETE`), but the flow's Lex block takes its **error** branch. The flow therefore
-> also routes on the partner's own `l3_outcome` contact attribute. The design already has the
+> also routes on the partner's own `partner_outcome` contact attribute. The design already has the
 > partner write intent, summary and outcome to the contact, so this costs nothing extra. Worth
 > raising with AWS before production.
 

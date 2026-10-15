@@ -1,5 +1,5 @@
 // ============================================================================
-// Mock "Level3" external AI agent — Amazon Connect A2A protocol server (chat)
+// Mock external partner AI agent — Amazon Connect A2A protocol server (chat)
 // ============================================================================
 // Stands in for a third-party AI agent that Connect hands a conversation to
 // (agent-to-agent collaboration, handoffAgentConfiguration). It implements the
@@ -35,7 +35,7 @@ import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand } from "@
 const EXT = "https://docs.aws.amazon.com/connect/a2a/ext/v1";
 const EVENT_TYPE = `${EXT}/eventType`;
 const TABLE = process.env.TABLE_NAME!;
-const AGENT_NAME = process.env.AGENT_NAME || "level3-mock";
+const AGENT_NAME = process.env.AGENT_NAME || "partner-mock";
 const LOG_FRAMES = process.env.LOG_FRAMES === "true";
 const TTL_SECONDS = 24 * 3600;
 
@@ -144,7 +144,7 @@ interface Reply {
 
 function decide(input: string, turn: number): Reply {
   const t = input.trim().toLowerCase();
-  const hello = turn === 0 ? "Hi, this is the Level3 assistant (demo). " : "";
+  const hello = turn === 0 ? "Hi, this is the partner assistant (demo). " : "";
   if (t === "<empty_user_input>")
     return { text: "Are you still there? Tell me what you need help with, or ask for an agent.", intent: "silence" };
   if (/\b(agent|human|person|someone|escalate|representative)\b/.test(t))
@@ -185,10 +185,10 @@ async function writeContactContext(s: Session, reply: Reply, input: string) {
         InstanceId: m[1],
         InitialContactId: m[2],
         Attributes: {
-          l3_intent: reply.intent,
-          l3_summary: `Customer said: "${input.slice(0, 200)}" (${(s.turns ?? 0) + 1} turn(s) with Level3).`,
-          l3_outcome: reply.finish?.type ?? "IN_PROGRESS",
-          l3_escalation_reason: reply.finish?.type === "ESCALATE" ? reply.finish.reason : "",
+          partner_intent: reply.intent,
+          partner_summary: `Customer said: "${input.slice(0, 200)}" (${(s.turns ?? 0) + 1} turn(s) with the partner).`,
+          partner_outcome: reply.finish?.type ?? "IN_PROGRESS",
+          partner_escalation_reason: reply.finish?.type === "ESCALATE" ? reply.finish.reason : "",
         },
       })
     );

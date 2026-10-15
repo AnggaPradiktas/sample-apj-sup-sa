@@ -5,7 +5,7 @@
 //          which hands the conversation to the external agent immediately
 //     Tool = Escalate          -> "connecting you to an agent" -> support queue
 //     Tool = Complete          -> thanks -> end
-//     Lex error                -> route on the partner's l3_outcome contact attribute
+//     Lex error                -> route on the partner's partner_outcome contact attribute
 //                                 (ESCALATE / COMPLETE as above)
 //     no match / any error     -> support queue (never drop the customer: the
 //                                 fallback path when the partner fails)
@@ -42,7 +42,7 @@ export function a2aChatFlow(p: { assistantArn: string; botAliasArn: string; aiAg
     {
       Identifier: WATT,
       Type: "UpdateContactAttributes",
-      Parameters: { Attributes: { "x-amz-lex:q-in-connect:session-arn": "$.Wisdom.SessionArn", a2a_partner: "level3" } },
+      Parameters: { Attributes: { "x-amz-lex:q-in-connect:session-arn": "$.Wisdom.SessionArn", a2a_partner: "partner-mock" } },
       Transitions: { NextAction: LEX, Errors: [{ NextAction: LEX, ErrorType: "NoMatchingError" }] },
     },
     {
@@ -82,7 +82,7 @@ export function a2aChatFlow(p: { assistantArn: string; botAliasArn: string; aiAg
     {
       Identifier: PARTNER,
       Type: "Compare",
-      Parameters: { ComparisonValue: "$.Attributes.l3_outcome" },
+      Parameters: { ComparisonValue: "$.Attributes.partner_outcome" },
       Transitions: {
         NextAction: SORRY,
         Conditions: [

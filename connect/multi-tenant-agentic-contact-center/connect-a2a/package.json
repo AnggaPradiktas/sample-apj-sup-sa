@@ -2,7 +2,7 @@
   "name": "anycompany-pay-connect-a2a",
   "version": "0.1.0",
   "private": true,
-  "description": "Opt-in Amazon Connect agent-to-agent (A2A) demo: chat handed to an external AI agent (mock Level3)",
+  "description": "Opt-in Amazon Connect agent-to-agent (A2A) demo: chat handed to an external AI agent (a mock partner)",
   "scripts": {
     "synth": "cdk synth",
     "cdk": "cdk"

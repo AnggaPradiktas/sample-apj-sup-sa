@@ -545,7 +545,7 @@ Would you like me to log this as a support case so an agent can follow up when w
               <p>
                 <code>connect-a2a/</code> shows Amazon Connect <strong>agent-to-agent (A2A)
                 collaboration</strong>: a chat is handed to a <em>third-party</em> AI agent over a
-                WebSocket, with no PSTN transfer. A mock &ldquo;Level3&rdquo; partner on API Gateway
+                WebSocket, with no PSTN transfer. A mock partner on API Gateway
                 WebSocket + Lambda implements the Connect A2A protocol contract, so the demo is
                 self-contained.
               </p>
@@ -570,7 +570,7 @@ Would you like me to log this as a support case so an agent can follow up when w
               <Code>{`cd connect-a2a && bash deploy.sh
 # then: Connect admin website -> Test chat -> flow "anycompany-pay-chat-a2a"
 #   "What is the payout time?"  -> partner answers
-#   "agent"                      -> ESCALATE -> support queue (l3_* attributes on the contact)
+#   "agent"                      -> ESCALATE -> support queue (partner_* attributes on the contact)
 #   "bye"                        -> COMPLETE -> chat ends`}</Code>
               <p>
                 It is configured through the API only (CloudFormation does not support{" "}

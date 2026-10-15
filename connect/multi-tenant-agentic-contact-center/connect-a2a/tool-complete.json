@@ -3,7 +3,7 @@
   "toolType": "RETURN_TO_CONTROL",
   "description": "End the conversation after the partner assistant completed it.",
   "instruction": {
-    "instruction": "Call this when the partner assistant (Level3) finishes with COMPLETE."
+    "instruction": "Call this when the partner assistant finishes with COMPLETE."
   },
   "inputSchema": {
     "type": "object",

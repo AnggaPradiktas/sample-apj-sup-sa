@@ -1,5 +1,5 @@
 #!/bin/bash
-# Register the external (Level3) A2A agent with Amazon Connect and create the
+# Register the external partner A2A agent with Amazon Connect and create the
 # Connect AI agent that hands conversations to it. API-only steps (no
 # CloudFormation support for A2A_SERVER applications yet), all idempotent:
 #
@@ -25,13 +25,13 @@ SFX="${ENV_NAME:+-${ENV_NAME}}"
 INSTANCE_ID="${INSTANCE_ARN##*/}"
 ASSISTANT_ID="${ASSISTANT_ARN##*/}"
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
-APP_NAME="anycompany-pay-level3${SFX}"
+APP_NAME="anycompany-pay-partner-agent${SFX}"
 SP_NAME="anycompany-pay-a2a-agent${SFX}"
 PROMPT_NAME="anycompany-pay-a2a-orchestration${SFX}"
 AGENT_NAME="anycompany-pay-a2a-orchestrator${SFX}"
 MODEL_ID="${MODEL_ID:-global.anthropic.claude-sonnet-4-5-20250929-v1:0}"
 API_FORMAT="${API_FORMAT:-MESSAGES}"
-INSTRUCTION="Hand every conversation to the Level3 partner assistant. It returns COMPLETE or ESCALATE."
+INSTRUCTION="Hand every conversation to the partner assistant. It returns COMPLETE or ESCALATE."
 
 # ---- 1) A2A_SERVER application ---------------------------------------------------
 APP_ARN="$(aws appintegrations list-applications --region "$R" \
@@ -42,7 +42,7 @@ if [[ -z "$APP_ARN" || "$APP_ARN" == "None" ]]; then
   echo "==> Creating A2A_SERVER application $APP_NAME -> $ENDPOINT_URL" >&2
   APP_ARN="$(aws appintegrations create-application --region "$R" \
     --name "$APP_NAME" --namespace "$APP_NAME" \
-    --description "Level3 external AI agent (mock), Amazon Connect A2A" \
+    --description "External partner AI agent (mock), Amazon Connect A2A" \
     --application-source-config "$SOURCE" --application-type A2A_SERVER --auth-config "$AUTH" \
     --query Arn --output text)"
 else
@@ -68,9 +68,9 @@ ALLOWED="[{\"Arn\":\"${APP_ARN}\",\"Type\":\"THIRD_PARTY\"}]"
 SP_ID="$(aws connect list-security-profiles --region "$R" --instance-id "$INSTANCE_ID" \
   --query "SecurityProfileSummaryList[?Name=='${SP_NAME}'].Id | [0]" --output text)"
 if [[ -z "$SP_ID" || "$SP_ID" == "None" ]]; then
-  echo "==> Creating security profile $SP_NAME (allows the Level3 application)" >&2
+  echo "==> Creating security profile $SP_NAME (allows the partner application)" >&2
   SP_ID="$(aws connect create-security-profile --region "$R" --instance-id "$INSTANCE_ID" \
-    --security-profile-name "$SP_NAME" --description "Lets the A2A orchestrator hand off to Level3" \
+    --security-profile-name "$SP_NAME" --description "Lets the A2A orchestrator hand off to the partner agent" \
     --allowed-ai-agents "$ALLOWED" --query SecurityProfileId --output text)"
 else
   aws connect update-security-profile --region "$R" --instance-id "$INSTANCE_ID" \

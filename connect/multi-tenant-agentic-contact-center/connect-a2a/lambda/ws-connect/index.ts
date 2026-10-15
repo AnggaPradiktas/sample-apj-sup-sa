@@ -1,4 +1,4 @@
-// WebSocket $connect for the mock Level3 A2A endpoint (runs after the authorizer).
+// WebSocket $connect for the mock partner A2A endpoint (runs after the authorizer).
 //   - Echoes the A2A-Extensions header to confirm the Connect extension is active.
 //   - Keeps the W3C traceparent sent on the upgrade, so the agent's TRACING_SPANs
 //     adopt Connect's trace id and parent span (required trace data).
