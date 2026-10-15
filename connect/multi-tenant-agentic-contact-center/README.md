@@ -21,7 +21,7 @@ This is a **Amazon Connect + Amazon Bedrock AgentCore** sample built on a paymen
 | **Tasks** (scheduled `StartTaskContact`) | After-hours requests become a case + one scheduled follow-up task at the next opening, VIP → key → shared | `connect-routing/` |
 | **Flow Lambda integration** | Contact context (tier, case owner) and after-hours case/task scheduling | `connect-routing/` |
 | **In-app web calling + screen sharing** (`StartWebRTCContact`, Chime SDK) | Merchant shares their screen from a case; agent watches live in the CCP | `connect-screenshare/` |
-| **Agent-to-agent (A2A) collaboration with an external AI agent** (AppIntegrations `A2A_SERVER`, `handoffAgentConfiguration`) | A chat is handed to a third-party AI agent (a mock "Level3" partner) over the Connect A2A extension; its ESCALATE reaches the support queue with its summary | `connect-a2a/` |
+| **Agent-to-agent (A2A) collaboration with an external AI agent** (AppIntegrations `A2A_SERVER`, `handoffAgentConfiguration`) | A chat is handed to a third-party AI agent (a mock partner) over the Connect A2A extension; its ESCALATE reaches the support queue with its summary | `connect-a2a/` |
 | **Security profiles + users** | Agent permissions, the AI agent's MCP tool grant, video/screen-share access; demo agents provisioned by script | all |
 
 > **Documentation index** — this README is the conceptual guide. Everything else
@@ -247,7 +247,7 @@ Uses the same region/env resolution as deploy. Override with `REGION=<REGION>`, 
   **shares their screen**; the agent answers in the embedded CCP and sees it live. Tenant and case
   ownership are enforced server-side, as for chat.
 - **Hand-off to an external AI agent (opt-in, `connect-a2a/`)** — Amazon Connect **agent-to-agent
-  (A2A) collaboration**: a chat is handed to a third-party AI agent (a mock "Level3" partner on an
+  (A2A) collaboration**: a chat is handed to a third-party AI agent (a mock partner on an
   API Gateway WebSocket) with an immediate handoff. The partner answers, writes its intent / summary /
   outcome to the contact, and finishes with **COMPLETE** or **ESCALATE**; an escalation (or any partner
   failure) goes to the support queue.
@@ -331,7 +331,7 @@ routing profile, and how the tenant threads through all of it — see [§6a](#6a
 | **Search API (`SearchApiFn`)** | HTTP API + Cognito JWT authorizer → Lambda **in the Aurora VPC** → the private collection; `GET /transactions`, `GET /transactions/{id}` | GET-only search; enforces tenant isolation by forcing `merchant_id` from the validated JWT |
 | **Routing module** (`connect-routing/`, opt-in) | CS hours (+ demo closed/open hours), tier chat queues + `ooh-followup` task queue, RP-Live / RP-OOH-Backlog, Cases fields `tier`/`ooh_task_pending`/`ooh_task_id` + OOH template, `ContactContextFn` + `OohSchedulerFn`, the routed chat flow and the OOH task flow, an SNS alert topic | A case is not routable: the flow reads the case owner and tier to set routing criteria + priority (Pattern A), and turns after-hours contacts into scheduled, prioritised tasks (Pattern B) |
 | **Screen-share module** (`connect-screenshare/`, opt-in) | Voice queue + web-call flow, `anycompany-pay-video-agent` security profile (`VideoContact.Access`), `ScreenShareApiFn` (`POST /screenshare/start`, `GET /screenshare/status/{id}`) | Native Connect web calling with customer screen sharing; the Lambda stamps the tenant from the JWT and verifies case ownership |
-| **A2A module** (`connect-a2a/`, opt-in) | KMS key + Secrets Manager API key readable by Connect, mock partner (API Gateway WebSocket + `$connect` Bearer authorizer + `Level3MockFn` + DynamoDB), its own Lex bot (`AMAZON.QInConnectIntent`), the `anycompany-pay-chat-a2a` flow; via `provision-a2a.sh`: `A2A_SERVER` application + association, `anycompany-pay-a2a-agent` security profile, prompt + orchestrator AI agent with an immediate handoff | Shows the Connect side of integrating a third-party AI agent without a PSTN transfer, plus a working partner server that implements the A2A protocol contract (session, turns, tracing, FINISH, errors) |
+| **A2A module** (`connect-a2a/`, opt-in) | KMS key + Secrets Manager API key readable by Connect, mock partner (API Gateway WebSocket + `$connect` Bearer authorizer + `PartnerMockFn` + DynamoDB), its own Lex bot (`AMAZON.QInConnectIntent`), the `anycompany-pay-chat-a2a` flow; via `provision-a2a.sh`: `A2A_SERVER` application + association, `anycompany-pay-a2a-agent` security profile, prompt + orchestrator AI agent with an immediate handoff | Shows the Connect side of integrating a third-party AI agent without a PSTN transfer, plus a working partner server that implements the A2A protocol contract (session, turns, tracing, FINISH, errors) |
 | **SSM runtime-config parameter** | `/anycompany-pay/<env>/runtime-config` (Cognito + Connect + `searchApiUrl` values) | Decouples the stacks: the app reads it as a secret; the Connect and zero-ETL stacks merge their values in and force an ECS redeploy — no rebuild, no circular dependency |
 
 ---

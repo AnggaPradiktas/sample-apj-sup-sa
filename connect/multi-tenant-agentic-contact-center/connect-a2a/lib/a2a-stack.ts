@@ -18,7 +18,7 @@ import { a2aChatFlow } from "./flows";
 
 /**
  * Opt-in agent-to-agent (A2A) collaboration demo: Amazon Connect hands a chat to an
- * EXTERNAL AI agent ("Level3", mocked here) over the Connect A2A extension.
+ * EXTERNAL partner AI agent (mocked here) over the Connect A2A extension.
  *
  * Customer side (what a Connect customer creates for any partner agent):
  *   - customer managed KMS key that connect.amazonaws.com can decrypt
@@ -32,7 +32,7 @@ import { a2aChatFlow } from "./flows";
  *   - [2nd deploy, -c a2aAgentArn] a chat flow that opens the AI session and routes
  *     ESCALATE (or any failure) to the human support queue
  *
- * Partner side (what Level3 would host; mocked so the demo is self-contained):
+ * Partner side (what the partner would host; mocked so the demo is self-contained):
  *   - API Gateway WebSocket API (public wss://), Bearer-key authorizer on $connect
  *   - Lambda implementing the A2A text session (INIT_SESSION, turns, TRACING_SPAN,
  *     FINISH), DynamoDB for per-session state across chat reconnections
@@ -64,8 +64,8 @@ export class ConnectA2aStack extends cdk.Stack {
       })
     );
     const apiKey = new secrets.Secret(this, "A2aApiKey", {
-      secretName: `anycompany-pay/a2a/level3-api-key${sfx}`,
-      description: "API key Connect presents (Bearer) to the Level3 A2A endpoint",
+      secretName: `anycompany-pay/a2a/partner-api-key${sfx}`,
+      description: "API key Connect presents (Bearer) to the partner A2A endpoint",
       encryptionKey: key,
       generateSecretString: { passwordLength: 48, excludePunctuation: true },
       removalPolicy: cdk.RemovalPolicy.DESTROY,
@@ -78,7 +78,7 @@ export class ConnectA2aStack extends cdk.Stack {
       })
     );
 
-    // ---- partner side: mock Level3 A2A server ----------------------------------
+    // ---- partner side: mock partner A2A server ----------------------------------
     const table = new dynamodb.Table(this, "A2aSessions", {
       partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
@@ -99,9 +99,9 @@ export class ConnectA2aStack extends cdk.Stack {
     const authFn = fn("A2aAuthorizerFn", "ws-authorizer", { API_KEY_SECRET_ARN: apiKey.secretArn });
     apiKey.grantRead(authFn);
     const connectFn = fn("A2aConnectFn", "ws-connect", { TABLE_NAME: table.tableName });
-    const agentFn = fn("Level3MockFn", "level3-mock", {
+    const agentFn = fn("PartnerMockFn", "partner-mock", {
       TABLE_NAME: table.tableName,
-      AGENT_NAME: "level3-mock",
+      AGENT_NAME: "partner-mock",
       LOG_FRAMES: ctx("logFrames", "true"),
     });
     table.grantReadWriteData(connectFn);
@@ -115,9 +115,9 @@ export class ConnectA2aStack extends cdk.Stack {
       })
     );
 
-    const api = new apigwv2.WebSocketApi(this, "Level3A2aApi", {
-      apiName: `anycompany-pay-level3-a2a${sfx}`,
-      description: "Mock Level3 external AI agent (Amazon Connect A2A extension, chat)",
+    const api = new apigwv2.WebSocketApi(this, "PartnerA2aApi", {
+      apiName: `anycompany-pay-partner-a2a${sfx}`,
+      description: "Mock external partner AI agent (Amazon Connect A2A extension, chat)",
       connectRouteOptions: {
         integration: new WebSocketLambdaIntegration("ConnectInt", connectFn),
         authorizer: new WebSocketLambdaAuthorizer("BearerAuth", authFn, {
@@ -237,7 +237,7 @@ export class ConnectA2aStack extends cdk.Stack {
         instanceArn,
         name: `anycompany-pay-chat-a2a${sfx}`,
         type: "CONTACT_FLOW",
-        description: "Chat handed to the external Level3 agent (A2A); ESCALATE or any failure -> human queue",
+        description: "Chat handed to the external partner agent (A2A); ESCALATE or any failure -> human queue",
         content: JSON.stringify(
           a2aChatFlow({
             assistantArn,
@@ -256,6 +256,6 @@ export class ConnectA2aStack extends cdk.Stack {
     new cdk.CfnOutput(this, "A2aApiKeySecretArn", { value: apiKey.secretArn });
     new cdk.CfnOutput(this, "A2aKmsKeyArn", { value: key.keyArn });
     new cdk.CfnOutput(this, "A2aBotAliasArn", { value: botAlias.attrArn });
-    new cdk.CfnOutput(this, "Level3MockFnName", { value: agentFn.functionName });
+    new cdk.CfnOutput(this, "PartnerMockFnName", { value: agentFn.functionName });
   }
 }

@@ -1,4 +1,4 @@
-// WebSocket $connect authorizer for the mock Level3 A2A endpoint.
+// WebSocket $connect authorizer for the mock partner A2A endpoint.
 // Connect sends the partner API key as "Authorization: Bearer <apiKey>" on the
 // WebSocket upgrade. The key is the Secrets Manager secret the customer
 // registered on the AppIntegrations A2A_SERVER application (in this demo the
