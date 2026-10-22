@@ -4,17 +4,22 @@ AI agents in an AWS Connect Customer contact center answer customer questions an
 
 This sample provides two custom [AWS Well-Architected](https://aws.amazon.com/architecture/well-architected/) lenses that assess whether your content, knowledge bases, AI guardrails, security controls, and operations are ready for AI agents. You import a lens into the [AWS Well-Architected Tool](https://aws.amazon.com/well-architected-tool/), answer its questions for your AWS Connect workload, and get a risk rating and an improvement plan for each question. Run it before launch, and again as your deployment grows.
 
+The following diagram shows the path the lenses assess, from the knowledge articles you write to the answers customers and human agents get. Each number marks one pillar of the full readiness lens. The Startup Essentials lens covers the same six areas with fewer questions.
+
+![Diagram of the six areas that the lens assesses. Knowledge articles in AWS S3, Salesforce, ServiceNow, Zendesk, SharePoint Online, and websites (pillar 1, content strategy) flow into knowledge bases (pillar 2, knowledge base architecture). AI agents in AWS Connect Customer, with models and guardrails from AWS Bedrock (pillar 3, AI configuration and guardrails), answer customers on voice and chat and assist human agents. Feedback flows back to the articles (pillar 4, content lifecycle and governance). Security and compliance (pillar 5) and operational excellence with AWS CloudWatch (pillar 6) apply to every step.](images/lens-coverage.png)
+
 > **Note:** These are custom lenses written by AWS Solutions Architects. They aren't part of the AWS Well-Architected Lens Catalog. They complement the [AWS Connect Well-Architected lenses](https://github.com/aws-samples/amazon-connect-well-architected-lenses), which cover general AWS Connect operations.
 
 ## What's in this folder
 
-The folder contains two lens files and this guide.
+The folder contains two lens files, this guide, and its diagram.
 
 | File | Description |
 | --- | --- |
 | [`ai-contact-center-readiness-startup-essentials-lens.json`](./ai-contact-center-readiness-startup-essentials-lens.json) | **Startup Essentials lens.** 21 questions and 62 best practices across six pillars. Covers the minimum foundations for a first launch of AI agents. |
 | [`ai-contact-center-readiness-lens.json`](./ai-contact-center-readiness-lens.json) | **Full readiness lens.** 60 questions and 253 best practices across six pillars. For teams that run AI agents across several lines of business, channels, or languages, or that handle regulated data. |
 | `README.md` | This guide. |
+| [`images/`](./images/) | The diagram used in this guide. |
 
 ## Choose a lens
 
